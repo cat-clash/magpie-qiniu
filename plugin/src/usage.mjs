@@ -97,27 +97,52 @@ export function readKeyQuota(data) {
   return { daily, monthly, total };
 }
 
-/** 资源包：上游字段不稳定，用 pick 兜（总量/已用/到期/名称）。 */
+/**
+ * 资源包单位换算：七牛 billing respack/list 返回 `respack_unit: "k/tokens"`，
+ * 数值（total_amount/used_amount）以千 token 计；buildUsage 统一按 token 展示，
+ * 所以这里 ×1000。其它单位（m/tokens、裸 tokens）按各自倍数换。
+ */
+function respackScale(unit) {
+  const u = String(unit || "").toLowerCase();
+  if (/(^|\/)k(\/|$)|千/.test(u)) return 1000;
+  if (/(^|\/)m(\/|$)|百万/.test(u)) return 1_000_000;
+  return 1;
+}
+
+/** 资源包：上游字段不稳定，用 pick 兜（总量/已用/到期/名称/单位）。 */
 export function readRespack(data) {
   const src = data && typeof data === "object" ? (data.data ?? data) : undefined;
   const list = Array.isArray(src) ? src : Array.isArray(src?.list) ? src.list : Array.isArray(src?.items) ? src.items : undefined;
   if (!list || !list.length) return undefined;
   const rows = list
     .map((it) => {
-      const total = numberOrNull(pick(it, ["total", "amount", "quota", "grant_total", "size"]));
-      const used = numberOrNull(pick(it, ["used", "used_amount", "consume", "consumed", "usage"]));
-      const expire = pick(it, ["expire_at", "expired_at", "end_time", "expire_time", "deadline"]);
+      // 七牛真实字段：total_amount / used_amount（单位 k/tokens）；旧字段一并兼容。
+      const totalRaw = numberOrNull(pick(it, ["total_amount", "totalAmount", "total", "amount", "grant_total", "size"]));
+      const usedRaw = numberOrNull(pick(it, ["used_amount", "usedAmount", "used", "consume", "consumed", "usage"]));
+      const scale = respackScale(pick(it, ["respack_unit", "unit", "unit_type"]));
+      const total = totalRaw === null ? null : totalRaw * scale;
+      const used = usedRaw === null ? null : usedRaw * scale;
+      const expire = pick(it, ["effective_end", "expire_at", "expired_at", "end_time", "expire_time", "deadline"]);
+      // status: 2=生效中（七牛）；已过期/已用尽的包不该占用主窗口。
+      const status = pick(it, ["status"]);
       return {
-        name: String(pick(it, ["name", "title", "product_name", "respack_name", "type"]) ?? "资源包"),
+        name: String(pick(it, ["respack_name", "name", "title", "product_name", "type"]) ?? "资源包"),
         total,
         used,
         expireAt: expire === undefined ? undefined : normalizeTime(expire),
+        active: status === undefined ? true : Number(status) === 2 || status === "2" || status === "active" || status === "valid",
       };
     })
-    .filter((r) => Number.isFinite(r.total) && r.total > 0);
+    .filter((r) => r.active && Number.isFinite(r.total) && r.total > 0);
   if (!rows.length) return undefined;
-  rows.sort((a, b) => (b.total || 0) - (a.total || 0));
-  return rows[0];
+  // 先按「剩余量」降序：把真正还能用的包顶到第一位，而不是只按总量。
+  const restOf = (r) => (Number.isFinite(r.used) ? r.total - r.used : r.total);
+  rows.sort((a, b) => restOf(b) - restOf(a));
+  const top = rows[0];
+  // 把同一账号下所有生效包的剩余额度汇总，供 buildUsage 展示总量。
+  const totalRest = rows.reduce((sum, r) => sum + restOf(r), 0);
+  const totalUsed = rows.reduce((sum, r) => sum + (Number.isFinite(r.used) ? r.used : 0), 0);
+  return { ...top, aggregated: rows.length > 1, packCount: rows.length, totalRest, totalUsed, allTotal: rows.reduce((sum, r) => sum + r.total, 0) };
 }
 
 function normalizeTime(v) {
@@ -153,13 +178,20 @@ export function buildUsage({ account, series, quota, balance, respack, costDay, 
 
   // 1) 资源包：唯一有真实分母的额度，排在第一位
   if (pack && Number.isFinite(pack.used)) {
-    const rest = Math.max(0, pack.total - pack.used);
+    // 多个包时统一用聚合口径：剩余=各包剩余之和，分母=各包总量之和，用量=已用之和。
+    // 这样 amount/limit/used 三者自洽，不会出现「top 包 used=0 但旁边还有包用掉 99 万」的错位。
+    const agg = pack.aggregated && Number.isFinite(pack.allTotal) && Number.isFinite(pack.totalRest) && Number.isFinite(pack.totalUsed);
+    const total = agg ? pack.allTotal : pack.total;
+    const usedTokens = agg ? pack.totalUsed : pack.used;
+    const rest = agg ? pack.totalRest : Math.max(0, pack.total - pack.used);
+    const label = agg ? `${pack.name} 等 ${pack.packCount} 个资源包` : pack.name;
     windows.push({
-      name: pack.name,
-      used: Math.round((pack.used / pack.total) * 100),
+      name: label,
+      used: Math.round((usedTokens / total) * 100),
       amount: rest,
-      limit: pack.total,
+      limit: total,
       unit: "tokens",
+      display: `${tokensText(rest)} tokens 可用`,
       ...(pack.expireAt ? { resetsAt: pack.expireAt } : {}),
     });
   } else if (pack) {
@@ -182,14 +214,18 @@ export function buildUsage({ account, series, quota, balance, respack, costDay, 
   }
 
   // 3) 余额（只有 AK/SK 账号才查得到）
+  // 现金余额为 0 绝不能写成 used:100/remaining:0 —— magpie 会据此判定账号额度耗尽、
+  // 拒绝调度模型。七牛新用户赠送的是 token 资源包（见上面的 pack），现金余额本就是 0，
+  // 所以余额窗口一律 aside:true，只展示不参与路由；真正决定能否调用的是资源包窗口。
   if (balance && Number.isFinite(balance.available)) {
     if (balance.available <= 0) {
-      windows.push({ name: "账户余额", used: 100, amount: balance.available, unit: "元", display: `${yuan(balance.available)} 余额不足，请充值` });
+      const hint = pack ? "（token 资源包可正常调用）" : "（请充值或领资源包）";
+      windows.push({ name: "现金余额", used: 0, aside: true, amount: balance.available, unit: "元", display: `${yuan(balance.available)}${hint}` });
     } else {
-      windows.push({ name: "账户余额", used: 0, aside: true, amount: balance.available, display: yuan(balance.available), unit: "元" });
+      windows.push({ name: "现金余额", used: 0, aside: true, amount: balance.available, display: yuan(balance.available), unit: "元" });
     }
     if (Number.isFinite(balance.unpaid) && balance.unpaid > 0) {
-      windows.push({ name: "待付金额", used: 100, aside: true, amount: balance.unpaid, display: `${yuan(balance.unpaid)} 待付`, unit: "元" });
+      windows.push({ name: "待付金额", used: 0, aside: true, amount: balance.unpaid, display: `${yuan(balance.unpaid)} 待付`, unit: "元" });
     }
   }
 

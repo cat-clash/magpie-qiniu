@@ -125,7 +125,7 @@ export async function verifyAksk({ accessKey, secretKey, billingOrigin, fetchImp
     const status = Number(e?.status) || 0;
     const text = errorText(e);
     if (status === 401 || /invalid ak\/sk sign|invalid user|authorization/i.test(text)) {
-      return { ok: false, reason: "AK/SK 签名不通过，检查是否复制错了", code: "aksk_invalid", status };
+      return { ok: false, reason: "AK/SK 签名不通过：请确认两个框没填反（第 1 步应填 AccessKey、第 2 步应填 SecretKey），再检查是否复制完整", code: "aksk_invalid", status };
     }
     return { ok: false, reason: `校验 AK/SK 失败：${text}`, code: "network", status };
   }

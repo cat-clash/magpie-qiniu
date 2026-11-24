@@ -356,8 +356,18 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
         labels: { en: "Qiniu AK/SK" },
         placeholder: "AccessKey / SecretKey",
         prompts: [
-          { type: "text", key: "accessKey", message: "AccessKey", placeholder: "控制台 → 密钥管理" },
-          { type: "password", key: "secretKey", message: "SecretKey" },
+          {
+            type: "text",
+            key: "accessKey",
+            message: "第 1 步 / 共 2 步：AccessKey（AK，访问密钥 ID）",
+            placeholder: "控制台 → 密钥管理 → AccessKey",
+          },
+          {
+            type: "password",
+            key: "secretKey",
+            message: "第 2 步 / 共 2 步：SecretKey（SK，私密密钥，创建时只显示一次）",
+            placeholder: "控制台 → 密钥管理 → SecretKey（创建时复制的那串）",
+          },
           { type: "text", key: "keyLabel", message: "备注（可留空）", placeholder: "例如 主账号" },
         ],
         authorize: authorizeAksk,
