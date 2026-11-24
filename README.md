@@ -42,6 +42,16 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 ## 安装
 
+**方式一：GitHub 直装（推荐，最省事）**
+
+```
+magpie plugin add github:cat-clash/magpie-qiniu
+```
+
+仓库根级 `index.mjs` / `package.json` 已按 magpie 的 `github:` 安装约定配置（入口转发到 `plugin/` 子目录），装完 `magpie plugin list` 复核 `qiniu-ai` 在列即可。之后插件更新只需 `magpie plugin remove qiniu-ai` 再重新 add 同一地址（或按 magpie 的更新机制刷新），始终拿到 GitHub 上的最新版。
+
+**方式二：本地脚本安装**（仓库克隆到本地后）
+
 脚本做三件事：
 
 1. 校验 `plugin/package.json` 存在且包名是 `magpie-qiniu-lite`；

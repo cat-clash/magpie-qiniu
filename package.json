@@ -1,0 +1,54 @@
+{
+  "name": "magpie-qiniu",
+  "version": "1.0.0",
+  "description": "七牛云 AI 大模型推理（api.qnaigc.com）的 Magpie 插件：sk- 密钥 / AK-SK 登录、91 个模型、资源包与余额用量窗口。仓库根级入口，支持 magpie plugin add github:cat-clash/magpie-qiniu 直装",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "plugin/index.mjs",
+    "plugin/src",
+    "plugin/README.md",
+    "install.ps1",
+    "install.sh",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test plugin/tests/*.test.mjs",
+    "test:bun": "bun test plugin/tests",
+    "smoke": "node plugin/tests/smoke.mjs"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "qiniu",
+    "qnaigc",
+    "provider",
+    "auth"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "magpie": {
+    "name": "七牛云 Qiniu AI",
+    "summary": {
+      "zh": "七牛云 AI 大模型推理（api.qnaigc.com）：sk- 密钥 / AK-SK 登录 90+ 模型，资源包额度与余额用量窗口",
+      "en": "Qiniu AI inference (api.qnaigc.com): sk- key / AK-SK sign-in, 90+ models, respack and balance usage windows"
+    },
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgdmlld0JveD0iMCAwIDY0IDY0Ij48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiMwQjExMTYiLz48cGF0aCBkPSJNMTYgNDJhMTAgMTAgMCAwIDEgMS0yMCAxNCAxNCAwIDAgMSAyNy0zIDkgOSAwIDAgMSAzIDE3eiIgZmlsbD0iIzEyQjdGNSIvPjxjaXJjbGUgY3g9IjMwIiBjeT0iMjgiIHI9IjEwIiBmaWxsPSJub25lIiBzdHJva2U9IiMyQkQ5QzQiIHN0cm9rZS13aWR0aD0iNCIvPjxwYXRoIGQ9Ik0zNSAzM2w3IDgiIHN0cm9rZT0iIzJCRDlDNCIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L3N2Zz4=",
+    "maxConcurrency": 4
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cat-clash/magpie-qiniu.git"
+  },
+  "author": "cat-clash",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/cat-clash/magpie-qiniu/issues"
+  },
+  "homepage": "https://github.com/cat-clash/magpie-qiniu#readme"
+}
