@@ -1,0 +1,35 @@
+name: 功能建议
+description: 安装器或插件可以加的能力
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 场景
+      description: 你现在怎么装 / 怎么用，卡在哪一步，为什么现有的七个参数和 options 解决不了
+      placeholder: 我在只出不去的网络里装，需要……
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的开关 / 行为
+      description: 具体到参数名（两端各叫什么）、options 键与默认值、夹紧范围、退出码变化，以及 `--dry-run` 该打印什么
+      placeholder: 新增 -Xxx / --xxx，默认 off，开启后……
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及
+      options:
+        - 安装 / 卸载脚本
+        - 登录方式（sk- / AK/SK / 批量导入）
+        - 模型目录与归一化
+        - 用量面板
+        - 错误分档与重试
+        - options / 夹紧
+        - 文档
+        - 测试 / CI
+    validations:
+      required: true

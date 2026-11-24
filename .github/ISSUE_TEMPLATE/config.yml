@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Magpie 插件机制 / CLI
+    url: https://usemagpie.ai/docs/plugins
+    about: 钩子契约、账号存储、X-Magpie-Sign-In 语义、plugin options 用法以官方文档为准
+  - name: 七牛云 AI 推理文档与控制台
+    url: https://developer.qiniu.com/aitokenapi
+    about: 端点、模型价格、限流、余额与资源包口径属上游，Key 在 portal.qiniu.com/ai-inference/api-key 管理

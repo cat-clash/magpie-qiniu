@@ -1,0 +1,65 @@
+name: 安装 / 运行问题
+description: 安装、升级、卸载、登录、用量面板、模型列表或推理请求出问题时用
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先跑一次 `install.ps1 -DryRun`（或 `./install.sh --dry-run`）并贴输出；它比截图信息量大。
+        **不要**贴真实 API Key、AK/SK 或签名。日志里的 Key 已被 `redact()` 打过码，
+        手抄的 `Authorization` 头请写成 `Bearer sk-****`。
+        本仓库安装器只有 `-Login/-Uninstall/-Force/-DryRun/-Yes/-NoColor/-Help` 七个开关，
+        **没有** `-Doctor`、`-Mirror`、`-Ref`，请不要在报告里写它们。
+  - type: input
+    id: env
+    attributes:
+      label: 环境（系统 / 运行方式 / magpie / 插件版本）
+      description: 三项都要。插件版本看 `plugin/package.json` 的 `version` 或 `magpie plugin list`
+      placeholder: Windows 11 + pwsh 5.1, magpie 0.1.x, magpie-qiniu-lite 0.x.x
+    validations:
+      required: true
+  - type: dropdown
+    id: step
+    attributes:
+      label: 出问题的一步
+      description: 只列本仓库真实存在的环节
+      options:
+        - 定位 magpie（退出码 1）
+        - 校验插件源码 / 包名（退出码 2）
+        - magpie plugin add（退出码 2）
+        - plugin list 复核（退出码 3）
+        - 登录 sk- Key
+        - 登录 AK/SK 或自动签发 Key
+        - 模型列表（provider.models / /v1/models）
+        - 用量面板（auth.usage）
+        - 推理请求（chat/completions）
+        - 推理请求（/v1/messages）
+        - 卸载
+        - --dry-run 本身
+    validations:
+      required: true
+  - type: input
+    id: flags
+    attributes:
+      label: 用的参数
+      description: 原样贴你执行的那一行；一个参数都没加就填 `无`
+      placeholder: powershell -ExecutionPolicy Bypass -File .\install.ps1 -Login -Force
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志（已脱敏）
+      description: 从 `==> ` 开头到结束行整段贴；确认里面没有 `sk-`、`tk-`、AK/SK、签名
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 自检
+      options:
+        - label: 已跑 -DryRun / --dry-run 并贴了输出
+          required: true
+        - label: 日志与截图已脱敏（无真实 Key / AK / SK / 签名）
+          required: true

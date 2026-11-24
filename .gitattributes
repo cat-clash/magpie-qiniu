@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# 换行与文本归一（A5 的 research/installer-notes.md 若落地了新建议，以那里为准）
+#
+# 为什么这么分：
+#   - install.sh / tests/e2e/fake-magpie 在 Windows 上检出后也可能被直接 bash
+#     执行，CRLF 会让它们报 `$'\r': command not found`，所以钉死 eol=lf。
+#   - install.ps1 走 `powershell -File`，cmd.exe 的 fake-magpie.cmd 有 label 与
+#     goto，两者都需要 CRLF。
+#   - 插件代码、JSON、文档、CI 配置统一 LF，保证 diff 稳定。
+#
+# 注意：install.ps1 要求**文件内容本身**以 UTF-8 with BOM 保存（PowerShell 5.1
+# 读中文需要 BOM）。BOM 属于文件内容，git 的 text 属性不会增删它，
+# 这里刻意不使用 working-tree-encoding —— 编码由编辑器与提交者负责。
+# ---------------------------------------------------------------------------
+
+* text=auto
+
+# 安装 / e2e 脚本
+*.sh text eol=lf
+*.bash text eol=lf
+tests/e2e/fake-magpie text eol=lf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 代码与数据
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+
+# 文档与配置
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary

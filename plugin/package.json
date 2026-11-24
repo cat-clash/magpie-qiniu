@@ -1,0 +1,52 @@
+{
+  "name": "magpie-qiniu-lite",
+  "version": "1.0.0",
+  "description": "七牛云 AI 大模型推理（api.qnaigc.com）的 Magpie 插件：sk- 密钥直连、91 个模型、真实积分余额与用量窗口",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "src",
+    "tests",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:bun": "bun test tests",
+    "smoke": "node tests/smoke.mjs",
+    "smoke:bun": "bun run tests/smoke.mjs"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "qiniu",
+    "qnaigc",
+    "provider",
+    "auth"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "magpie": {
+    "name": "七牛云 Qiniu AI",
+    "summary": {
+      "zh": "七牛云 AI 大模型推理（api.qnaigc.com）：sk- 密钥直连 90+ 模型，带余额与用量窗口",
+      "en": "Qiniu AI inference (api.qnaigc.com): sk- key sign-in, 90+ models, balance and usage windows"
+    },
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgdmlld0JveD0iMCAwIDY0IDY0Ij48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiMwQjExMTYiLz48cGF0aCBkPSJNMTYgNDJhMTAgMTAgMCAwIDEgMS0yMCAxNCAxNCAwIDAgMSAyNy0zIDkgOSAwIDAgMSAzIDE3eiIgZmlsbD0iIzEyQjdGNSIvPjxjaXJjbGUgY3g9IjMwIiBjeT0iMjgiIHI9IjEwIiBmaWxsPSJub25lIiBzdHJva2U9IiMyQkQ5QzQiIHN0cm9rZS13aWR0aD0iNCIvPjxwYXRoIGQ9Ik0zNSAzM2w3IDgiIHN0cm9rZT0iIzJCRDlDNCIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L3N2Zz4=",
+    "maxConcurrency": 4
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cat-clash/magpie-qiniu-installer.git"
+  },
+  "author": "cat-clash",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/cat-clash/magpie-qiniu-installer/issues"
+  },
+  "homepage": "https://github.com/cat-clash/magpie-qiniu-installer#readme"
+}

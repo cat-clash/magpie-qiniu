@@ -1,0 +1,26 @@
+# 依赖（本仓库零运行时依赖，这里挡的是误装）
+node_modules/
+plugin/node_modules/
+package-lock.json
+bun.lock
+bun.lockb
+
+# 日志与临时产物
+*.log
+*.tmp
+.tmp/
+.cache/
+
+# 安装 / e2e 的桩状态
+FAKE_MAGPIE_STATE*
+*.fake-magpie.json
+
+# 打包产物
+*.zip
+dist/
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

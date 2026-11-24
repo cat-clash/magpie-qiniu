@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# 矩阵只跑 ubuntu-latest：本工程零运行时依赖，Windows 侧由下方的 pwsh 语法校验步骤覆盖。
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-node@4（Node.js 22）
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 本工程零运行时依赖（package.json 无 dependencies）：无需 npm install / npm ci。
+
+      - name: 语法检查（全部 .mjs）
+        shell: bash
+        run: |
+          node --check plugin/index.mjs
+          for f in plugin/src/*.mjs; do node --check "$f"; done
+
+      - name: 冒烟自检
+        run: node plugin/tests/smoke.mjs
+
+      - name: 插件单元测试
+        run: node --test plugin/tests/*.test.mjs
+
+      - name: 安装器端到端测试
+        run: node --test tests/e2e/installer.test.mjs
+
+      - name: install.sh 语法
+        run: bash -n install.sh
+
+      - name: install.sh --help
+        run: bash install.sh --help
+
+      # 用桩代替真 magpie：dry-run 本身不调用宿主，这里只保证定位阶段不误装。
+      - name: install.sh --dry-run
+        env:
+          MAGPIE_BIN: /bin/true
+        run: bash install.sh --dry-run
+
+      - name: install.ps1 语法校验
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile('./install.ps1', [ref]$null, [ref]$errs)
+          if ($errs.Count -gt 0) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }
