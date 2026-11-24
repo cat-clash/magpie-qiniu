@@ -1,4 +1,4 @@
-# magpie-qiniu-installer
+# magpie-qiniu
 
 把 [七牛云 AI 推理网关](https://www.qiniu.com/ai/models)（`api.qnaigc.com`）接进 [Magpie](https://usemagpie.ai/)。插件源码就在本仓库 `plugin/`，安装只需三步，不联网、不下载任何东西。
 
@@ -72,7 +72,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 - 单测里有一条断言专门守住这一点 —— 装配结果出现 `auth.checkin` 直接判失败（见 [CONTRACT.md](./CONTRACT.md) §0）；
 - 新用户额度走的是**注册 / 首次创建 API 密钥时发放的免费资源包**（首次创建密钥即激活 300 万 Token 资源包），一次性发放，与签到无关，也不需要插件做任何事。
 
-如果哪天七牛真的上线了签到类活动，那是新需求，请先在 [issue 里说明](https://github.com/search?q=magpie-qiniu-installer)再实现。
+如果哪天七牛真的上线了签到类活动，那是新需求，请先在 [issue 里说明](https://github.com/search?q=magpie-qiniu)再实现。
 
 ## provider id：`qiniu-ai`，与社区插件的冲突说明
 
@@ -326,7 +326,7 @@ magpie plugin list
 
 ### 一个坑：别删掉你 clone 的目录
 
-插件注册的是 `...\magpie-qiniu-installer\plugin` 这个路径，**删了克隆目录插件就没了**。想删仓库又保留插件，先把源码挪到稳定位置再重新注册：
+插件注册的是 `...\magpie-qiniu\plugin` 这个路径，**删了克隆目录插件就没了**。想删仓库又保留插件，先把源码挪到稳定位置再重新注册：
 
 ```powershell
 $stable = "$env:LOCALAPPDATA\magpie\plugins-src\magpie-qiniu-lite"

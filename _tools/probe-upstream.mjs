@@ -26,8 +26,8 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 
-const HERE = dirname(fileURLToPath(import.meta.url)); // .../magpie-qiniu-installer/_tools
-const ROOT = dirname(HERE); // .../magpie-qiniu-installer
+const HERE = dirname(fileURLToPath(import.meta.url)); // .../magpie-qiniu/_tools
+const ROOT = dirname(HERE); // .../magpie-qiniu
 const DUMP_PATH = join(HERE, 'models-dump.json');
 const MD_PATH = join(ROOT, 'research', 'upstream-probe.md');
 const TRACE_PATH = join(tmpdir(), 'magpie-qiniu-probe-trace.json'); // 仓库外，仅本地迭代用

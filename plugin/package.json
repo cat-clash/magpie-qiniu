@@ -41,12 +41,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cat-clash/magpie-qiniu-installer.git"
+    "url": "git+https://github.com/cat-clash/magpie-qiniu.git"
   },
   "author": "cat-clash",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/cat-clash/magpie-qiniu-installer/issues"
+    "url": "https://github.com/cat-clash/magpie-qiniu/issues"
   },
-  "homepage": "https://github.com/cat-clash/magpie-qiniu-installer#readme"
+  "homepage": "https://github.com/cat-clash/magpie-qiniu#readme"
 }

@@ -30,7 +30,7 @@
 ### 退出码 `2` —— 源码或包名不对 / `plugin add` 失败
 
 - **现象**：`[x] 未找到插件源码: <路径>`、`[x] package.json name 不是 magpie-qiniu-lite`，或 `plugin add` 报错。
-- **定位**：确认目录结构是 `magpie-qiniu-installer\plugin\`（`package.json` + `index.mjs` + `src\` 都在）。脚本从自身所在目录取源码，**不会**去别处找。PowerShell 里若报 `禁止运行脚本`，那是执行策略，不是本仓库的问题。
+- **定位**：确认目录结构是 `magpie-qiniu\plugin\`（`package.json` + `index.mjs` + `src\` 都在）。脚本从自身所在目录取源码，**不会**去别处找。PowerShell 里若报 `禁止运行脚本`，那是执行策略，不是本仓库的问题。
 - **处理**：补齐目录后重跑；执行策略用 `powershell -ExecutionPolicy Bypass -File .\install.ps1`。若 `plugin add` 本身失败，直接手跑一次看完整报错：
   ```
   magpie plugin add <仓库绝对路径>\plugin

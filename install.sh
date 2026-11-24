@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# magpie-qiniu-installer —— 把本仓库内置的七牛云插件装进 Magpie（macOS / Linux）
+# magpie-qiniu —— 把本仓库内置的七牛云插件装进 Magpie（macOS / Linux）
 #
 #   四步：校验 plugin/ 源码 → 定位 magpie → magpie plugin add <仓库内 plugin/> → plugin list 复核。
 #   不联网、不下载、不依赖任何外部插件仓库，也不依赖 jq / node / curl。
@@ -21,7 +21,7 @@ LOGIN=0; UNINSTALL=0; FORCE=0; DRY=0; YES=0; NOCOLOR=0
 
 usage() {
   cat <<EOF
-magpie-qiniu-installer —— 把本仓库内置的七牛云插件装进 Magpie
+magpie-qiniu —— 把本仓库内置的七牛云插件装进 Magpie
 
 参数:
   --login       装完执行 magpie plugin login $PROVIDER

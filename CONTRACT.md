@@ -10,7 +10,7 @@
 - ESM `.mjs`，`engines.node >= 22`。宿主是 magpie 内置 Bun 1.x。
 - 不打印 secret：一切 `sk-…`/`tk-…`/AK:SK/签名必须过 `redact()`。
 - provider id = `qiniu-ai`（`qiniu` 被 `github:tk103331/magpie-qiniu-plugin` 占用了，见 `research/provider-ids.md`）。
-- npm 包名 = `magpie-qiniu-lite`；仓库名 = `magpie-qiniu-installer`。
+- npm 包名 = `magpie-qiniu-lite`；仓库名 = `magpie-qiniu`。
 - 全中文正文；双语只出现在宿主 UI 字段（`labels:{en}`、`importFroms`）。
 - 不许碰 `~/.config/magpie`（真配置）；一切验证用临时 HOME 或 `MAGPIE_BIN` 桩。
 

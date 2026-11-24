@@ -35,7 +35,7 @@ magpie plugin add ./plugin
 
 ### Q4. 装完之后能删掉 clone 的目录吗？
 
-**不能直接删。** magpie 注册的是本地路径（`...\magpie-qiniu-installer\plugin`），删了就等于把插件源码删了。要保留又不占工作区，先把 `plugin/` 复制到 magpie 自己的插件源码目录（Windows 建议 `%LOCALAPPDATA%\magpie\plugins-src\magpie-qiniu-lite`）再重新 `plugin add`。详见 [README「改完怎么装回本机」](../README.md#改完怎么装回本机)。
+**不能直接删。** magpie 注册的是本地路径（`...\magpie-qiniu\plugin`），删了就等于把插件源码删了。要保留又不占工作区，先把 `plugin/` 复制到 magpie 自己的插件源码目录（Windows 建议 `%LOCALAPPDATA%\magpie\plugins-src\magpie-qiniu-lite`）再重新 `plugin add`。详见 [README「改完怎么装回本机」](../README.md#改完怎么装回本机)。
 
 ## 登录与凭据
 

@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    magpie-qiniu-installer —— 把本仓库内置的七牛云插件装进 Magpie（Windows）。
+    magpie-qiniu —— 把本仓库内置的七牛云插件装进 Magpie（Windows）。
 
 .DESCRIPTION
     四步：校验 plugin/ 源码 → 定位 magpie → magpie plugin add <本仓库 plugin 目录> → plugin list 复核。
@@ -79,7 +79,7 @@ function Dim   { param([string]$m) Write-Clr ("   $m") DarkGray }
 
 function Show-Usage {
     $lines = @(
-        'magpie-qiniu-installer —— 把本仓库内置的七牛云插件装进 Magpie',
+        'magpie-qiniu —— 把本仓库内置的七牛云插件装进 Magpie',
         '',
         '参数:',
         '  --login       装完执行 magpie plugin login qiniu-ai',

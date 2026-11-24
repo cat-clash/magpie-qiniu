@@ -41,7 +41,7 @@ export const PORTAL_URL = "https://portal.qiniu.com/ai-inference/api-key";
 export const MODELS_URL = "https://www.qiniu.com/ai/models";
 export const MODELS_PLAZA_URL = MODELS_URL; // 能力与价格的真源（SSR JSON）
 export const DOCS_URL = "https://developer.qiniu.com/aitokenapi";
-export const REPO_URL = "https://github.com/cat-clash/magpie-qiniu-installer";
+export const REPO_URL = "https://github.com/cat-clash/magpie-qiniu";
 
 // ---- 超时 ------------------------------------------------------------------
 export const CHAT_TIMEOUT_MS = 600_000; // 图文/长上下文别学 curl 的 30s
