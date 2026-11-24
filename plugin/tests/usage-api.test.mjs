@@ -232,13 +232,13 @@ test("缺 sign 回调：抛 UsageApiError 且不设 signIn（不误伤账号）"
 });
 
 test("createInferenceKey：POST + JSON 体 + 签名 contentType；缺 key 字段/非 AKSK 账号不泄露", async () => {
-  const f = fakeFetch(respond({ body: { status: true, data: { key: NEW_SK, id: 42 } } }));
+  const f = fakeFetch(respond({ body: { status: true, data: { keys: [{ key: NEW_SK, name: "magpie-auto", enabled: true }] } } }));
   const seen = [];
   const r = await createInferenceKey({ account: AKSK_ACCOUNT, name: "magpie-auto", fetchImpl: f, sign: (a) => (seen.push(a), FAKE_AUTH) });
   assert.equal(seen.length, 1);
   assert.equal(seen[0].method, "POST");
   assert.equal(seen[0].contentType, "application/json");
-  assert.deepEqual(JSON.parse(seen[0].body), { name: "magpie-auto" });
+  assert.deepEqual(JSON.parse(seen[0].body), { count: 1, names: ["magpie-auto"] });
   assert.equal(f.calls[0].init.method, "POST");
   assert.equal(f.calls[0].headers["content-type"], "application/json");
   assert.equal(f.calls[0].headers.authorization, FAKE_AUTH);

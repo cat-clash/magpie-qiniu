@@ -742,7 +742,9 @@ export async function createInferenceKey({ account, name, signal, fetchImpl, ori
     throw new UsageApiError("签发推理 Key 需要 AK/SK 账号", { status: 0, code: "aksk_required" });
   }
   const label = typeof name === "string" && name.trim() ? name.trim().slice(0, 64) : "magpie-qiniu-lite";
-  const jsonBody = { name: label, ...(body && typeof body === "object" ? body : {}) };
+  // 官方 POST /v1/apikeys 要求批量格式：{count:1, names:[...]}，count 必须 1–100，names 长度与 count 一致。
+  // 旧版错发成 {name} 会被上游拒：「count must be between 1 and 100」。
+  const jsonBody = { count: 1, names: [label], ...(body && typeof body === "object" ? body : {}) };
   const url = buildUrl(resolveBase(origin, EP.inferOrigin, "/v1/apikeys"), { ...(query && typeof query === "object" ? query : {}) });
   const { data } = await callEndpoint({
     endpointName: "apikeys/create",
