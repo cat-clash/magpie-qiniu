@@ -245,17 +245,42 @@ magpie plugin add github:cat-clash/magpie-qiniu
 
 | key | 类型 | 默认 | 夹紧 / 说明 |
 |---|---|---|---|
-| `providerId` | string | `qiniu-ai` | 只允许 `[a-z0-9-]`，否则回落默认 |
-| `baseUrl` | string | `https://api.qnaigc.com/v1` | 必须 https，自动去尾斜杠 |
+| `providerId` | string | `qiniu-ai` | 只允许 `[a-z0-9-]`、≤40，否则回落默认 |
+| `inferBase` | string | `https://api.qnaigc.com/v1` | 自动去尾斜杠 |
 | `maxConcurrency` | number | `4` | 1..1000；用户在供应商上设的上限优先 |
-| `usageCacheMs` | number | `30000` | ≥5000 |
-| `chatTimeoutMs` | number | `600000` | ≥30000 |
-| `promptCache` | boolean | `true` | 注入 `prompt_cache_key` |
-| `autoCreateKey` | boolean | `true` | AK/SK 账号自动签发 `sk-` |
-| `showAllModels` | boolean | `true` | `provider.models` 拉 `/v1/models` 合并 |
-| `modelOverrides` | object | `{}` | `id → 局部字段` |
-| `extraHeaders` | object | `{}` | 值必须过 `redact()` 才允许进日志 |
-| `dailyUsageDays` | number | `7` | 1..31，token 序列回溯天数 |
+| `usageCacheMs` | number | `30000` | 10000..600000，用量/余额面板的缓存窗口 |
+| `liveModelList` | boolean | `true` | `provider.models` 拉 `/v1/models` 合并进模型表 |
+| `modelListTtlMs` | number | `3600000` | 60000..86400000，在线模型表缓存 |
+| `promptCache` | boolean | `false` | 注入 `prompt_cache_key`（上游文档没这个字段，默认不开） |
+| `quotaFailover` | boolean | `true` | 402 / 欠费 403 改写成 429 + `retry-after`，让宿主切下一个账号 |
+| `showCost` | boolean | `true` | 是否查 `cost` / `cost-detail` 窗口 |
+| `costSampleMs` | number | `600000` | 60000..3600000，两次费用取样最小间隔 |
+| `claudeBypass` | boolean | `false` | 把原厂 Claude 透传通路（`/bypass/anthropic`）纳入模型表 |
+| `keyLabel` | string | `""` | ≤40，给自动签发的 Key 打备注 |
+| `stateDir` | string | `""` | ≤300，状态目录（当前仅保留） |
+| `pacingMinMs` | number | `800` | 0..60000，**出站节奏闸**：同账号相邻放行的最小间隔，`0` = 关掉间隔闸 |
+| `pacingJitterMs` | number | `400` | 0..60000，每次放行叠加的随机抖动上限 |
+| `breakerThreshold` | number | `5` | 0..100，**账号级熔断**：连续失败多少条开闸，`0` = 禁用 |
+| `breakerCooldownMs` | number | `1800000` | 60000..28800000，首次熔断冷却，之后按 2^n 指数退避（封顶 8h） |
+| `retryOnNetworkError` | boolean | `true` | 传输层错误（连接被重置等）重试一次 |
+
+> 上表就是 `readOptions()` 实际收口的**全部**字段。早期文档里出现过的 `baseUrl` / `chatTimeoutMs` / `autoCreateKey` / `showAllModels` / `modelOverrides` / `extraHeaders` / `dailyUsageDays` 从未实现，填了也不生效。
+
+## 出站两道闸（1.1.0）
+
+七牛的限流是**按账号**的三个窗口：RPM / TPM（分钟）、TPD（日）。错误分档只能事后补救，所以出网前还有两道本地闸：
+
+| 闸 | 文件 | 解决什么 | 关掉 |
+|---|---|---|---|
+| **节奏闸** | `src/pacing.mjs` | 并发把一个账号的分钟窗口打穿 —— 按账号把放行间隔拉开到 `pacingMinMs` 并叠 `pacingJitterMs` 抖动，请求分布先落回限额内 | `pacingMinMs: 0`（抖动保留）或两者都 0 |
+| **熔断闸** | `src/breaker.mjs` | 撞上 TPD / 欠费后宿主还在原地重试 —— 连续失败到 `breakerThreshold` 就在本地直接回 `429 breaker_open` + `retry-after`，冷却到期放一个探测，成功关闭、失败退避翻倍 | `breakerThreshold: 0` |
+
+两条都**按账号分桶**：A 号熔断或在等间隔时，B 号立刻能走。熔断状态只在内存里（进程重启即清空）—— 宁可少冷却一次，也不让一份过期状态文件把账号锁死。
+
+只有**账号级**失败才喂熔断器：`401`（Key 失效）、`402`（余额不足）、`403`（欠费/停用/Key 额度）、`429`（限流）。模型级问题（`404` 未标价、模型不在订阅组）算账号健康 —— 换模型就能好，不该动账号。传输层网络错误只重试一次、不喂熔断器。
+
+诊断：`magpie plugin diagnostics magpie-qiniu-lite` 里能看到 `pacing` / `breaker` 两块实时快照。
+
 
 ```bash
 magpie plugin options magpie-qiniu-lite '{"showAllModels":false,"dailyUsageDays":14}'

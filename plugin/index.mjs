@@ -39,6 +39,8 @@ import {
   normalizeUsageSeries,
 } from "./src/usage-api.mjs";
 import { qiniuAuthHeader } from "./src/sign.mjs";
+import { createPacing } from "./src/pacing.mjs";
+import { createBreaker } from "./src/breaker.mjs";
 import { PORTAL_URL, REQUEST_LOG_CAP } from "./src/config.mjs";
 
 // ---- options ---------------------------------------------------------------
@@ -70,6 +72,11 @@ export function readOptions(raw = {}) {
     claudeBypass: o.claudeBypass === true,
     keyLabel: strOption(o.keyLabel, "", 40),
     stateDir: strOption(o.stateDir, "", 300),
+    pacingMinMs: numOption(o.pacingMinMs, DEFAULTS.pacingMinMs, CLAMP.pacingMinMs),
+    pacingJitterMs: numOption(o.pacingJitterMs, DEFAULTS.pacingJitterMs, CLAMP.pacingJitterMs),
+    breakerThreshold: numOption(o.breakerThreshold, DEFAULTS.breakerThreshold, CLAMP.breakerThreshold),
+    breakerCooldownMs: numOption(o.breakerCooldownMs, DEFAULTS.breakerCooldownMs, CLAMP.breakerCooldownMs),
+    retryOnNetworkError: o.retryOnNetworkError !== false,
   };
 }
 
@@ -207,6 +214,9 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
   const opts = readOptions(options);
   const provider = opts.providerId;
   const fetchImpl = undefined; // 用运行时自带 fetch
+  // 出站两道本地闸，都按账号分桶：节奏（预防 TPM/RPM）+ 熔断（TPD/欠费止损）
+  const pacing = createPacing({ minMs: opts.pacingMinMs, jitterMs: opts.pacingJitterMs });
+  const breaker = createBreaker({ threshold: opts.breakerThreshold, cooldownMs: opts.breakerCooldownMs });
 
   const config = async (cfg) => {
     if (!cfg || typeof cfg !== "object") return;
@@ -322,7 +332,13 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
         signal: init?.signal,
         timeoutMs: CHAT_TIMEOUT_MS,
         fetchImpl,
-        options: { quotaFailover: opts.quotaFailover },
+        options: {
+          quotaFailover: opts.quotaFailover,
+          accountKey: accountKey(auth),
+          pacing,
+          breaker,
+          retryOnNetworkError: opts.retryOnNetworkError,
+        },
       });
       return response;
     },
@@ -446,6 +462,8 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
         models: { total: Object.keys(table).length, active: activeCount(table) },
         live: { accounts: liveAuthCount(), cached: liveCache.size },
         cost: costStats,
+        pacing: pacing.stats(),
+        breaker: breaker.stats(),
         requestLog: requestLogOf,
         redact,
       };

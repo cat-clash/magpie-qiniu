@@ -138,6 +138,8 @@ forwardChat({ url, method, headers, body, apiKey, signal, timeoutMs, fetchImpl, 
 8. 403 且正文含 `is not available`/`model_not_found`/`模型不支持`/`price of the model is not set` → 改 **404** + `x-magpie-sign-in: kept`，type `not_available_error`。
 9. 其余状态原样透传，流式正文不改写。
 10. `getAuth()` 抛 → 401 `sign_in_required` + `x-magpie-sign-in: expired`。
+11. 出网前两道本地闸（1.1.0，都可关）：**熔断闸** `src/breaker.mjs` —— 该账号在冷却期内直接回 429 `breaker_open` + `retry-after`，**不打上游**；**节奏闸** `src/pacing.mjs` —— 按账号把相邻放行的间隔拉到 `pacingMinMs` 再叠 `pacingJitterMs` 抖动。两闸都按 `accountKey()` 分桶，互不影响。
+12. 熔断记账只认账号级失败：401 / 402 / 403 / 429 记 false；404（模型未标价 / 不在订阅组）记 true（账号健康）；5xx 不记账；传输层错误重试一次（`retryOnNetworkError`）且不记账。
 
 ## 6. 安装器契约（A5）
 

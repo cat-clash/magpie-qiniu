@@ -4,7 +4,7 @@
 
 export const PROVIDER = "qiniu-ai";
 export const PROVIDER_NAME = "七牛云 Qiniu AI";
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 
 // ---- 上游端点 ---------------------------------------------------------------
 // 注意：INFER_BASE 自带 /v1。Anthropic 官方 SDK 的 base_url 惯例是不带 /v1
@@ -73,6 +73,15 @@ export const DEFAULTS = {
   providerId: "", // 空 = qiniu-ai
   inferBase: "", // 空 = INFER_BASE
   claudeBypass: false, // 原厂 Claude 透传不在 /v1/models 里，默认不进模型表
+  // 出站节奏闸（pacing.mjs）：按账号拉开最小间隔 + 抖动，先避开 TPM/RPM 窗口。
+  // 0/0 = 完全直通；只关间隔就把 pacingMinMs 设 0。
+  pacingMinMs: 800,
+  pacingJitterMs: 400,
+  // 账号级熔断（breaker.mjs）：连续失败到阈值就在本地停一段时间，别对着同一个账号连撞。
+  // breakerThreshold 设 0 = 禁用熔断。
+  breakerThreshold: 5,
+  breakerCooldownMs: 30 * 60_000,
+  retryOnNetworkError: true, // 传输层错误重试一次（请求没进上游，不涉及重复计费）
 };
 
 // ---- 边界（options 夹取用，README 参数表里的数字必须来自这里）----------------
@@ -82,6 +91,10 @@ export const CLAMP = {
   modelListTtlMs: [60_000, 24 * 60 * 60_000],
   costSampleMs: [60_000, 60 * 60_000],
   providerIdPrefix: 40,
+  pacingMinMs: [0, 60_000],
+  pacingJitterMs: [0, 60_000],
+  breakerThreshold: [0, 100],
+  breakerCooldownMs: [60_000, 8 * 60 * 60_000],
 };
 
 // 供应商 id 必须只含小写字母、数字、连字符

@@ -11,6 +11,7 @@
 
 import { CHAT_PATH, CHAT_TIMEOUT_MS, INFER_BASE, USER_AGENT } from "./config.mjs";
 import { errorResponse, jsonResponse, redact, timeoutSignal } from "./http.mjs";
+import { isAccountLevelFailure } from "./breaker.mjs";
 
 const PASS_HEADERS = new Set(["accept", "content-type", "anthropic-version", "anthropic-beta"]);
 
@@ -213,29 +214,84 @@ export function classifyResponse(status, text, options = {}) {
 
 /**
  * 转发一次聊天请求。
+ *
+ * 出网前有两道本地闸（都可关，见 config.mjs 的 pacing* / breaker* 选项）：
+ *   1. 熔断闸 breaker：该账号正在本地冷却时直接回 429 + retry-after，不浪费一次上游往返；
+ *   2. 节奏闸 pacing：按账号拉开最小间隔 + 抖动，先避开 TPM/RPM 窗口，再谈错误分档。
+ * 传输层的网络错误（连接被重置之类）重试一次 —— 请求还没进上游，不涉及重复计费。
+ *
  * @returns {Promise<Response>}
  */
 export async function forwardChat({ url, method = "POST", headers, body, apiKey, signal, timeoutMs = CHAT_TIMEOUT_MS, fetchImpl, options = {} }) {
-  const outHeaders = filterHeaders(headers);
-  if (apiKey) outHeaders.set("authorization", `Bearer ${apiKey}`);
   const doFetch = fetchImpl || globalThis.fetch;
-  let response;
-  try {
-    response = await doFetch(url, {
+  const bucket = String(options.accountKey || "*");
+  const breaker = options.breaker;
+  const pacing = options.pacing;
+
+  // 1) 熔断闸
+  if (breaker) {
+    const waitMs = breaker.blockedFor(bucket);
+    if (waitMs > 0) {
+      const secs = Math.max(1, Math.round(waitMs / 1000));
+      const mins = secs >= 120 ? `约 ${Math.round(secs / 60)} 分钟` : `约 ${secs} 秒`;
+      return jsonResponse(
+        {
+          error: {
+            message: `这个账号刚被上游连续拒绝，插件已本地熔断（${mins}后自动探测；换账号更快）。`,
+            type: "rate_limit_error",
+            code: "breaker_open",
+          },
+        },
+        { status: 429, headers: { "retry-after": String(secs) } },
+      );
+    }
+  }
+
+  const once = async () => {
+    if (pacing) await pacing.wait(bucket);
+    const outHeaders = filterHeaders(headers);
+    if (apiKey) outHeaders.set("authorization", `Bearer ${apiKey}`);
+    return doFetch(url, {
       method,
       headers: outHeaders,
       body,
       signal: timeoutSignal(timeoutMs, signal),
       redirect: "follow",
     });
-  } catch (e) {
+  };
+
+  const netFailure = (e) => {
     if (e?.name === "AbortError" || e?.name === "TimeoutError") {
       return errorResponse(499, `请求被取消或超时（${Math.round(timeoutMs / 1000)}s）`, "timeout_error", "client_closed_request");
     }
+    if (options.retryOnNetworkError !== false) {
+      // 只有一次机会：连接被重置 / DNS 抖动这类，重发不会双倍计费
+      return null;
+    }
     return errorResponse(502, `连不上七牛：${redact(String(e?.message || e))}`, "api_connection_error", "upstream_unreachable");
+  };
+
+  let response;
+  try {
+    response = await once();
+  } catch (e) {
+    const cancelled = netFailure(e);
+    if (cancelled) return cancelled;
+    try {
+      response = await once();
+    } catch (e2) {
+      if (e2?.name === "AbortError" || e2?.name === "TimeoutError") {
+        return errorResponse(499, `请求被取消或超时（${Math.round(timeoutMs / 1000)}s）`, "timeout_error", "client_closed_request");
+      }
+      if (breaker) breaker.record(bucket, false);
+      return errorResponse(502, `连不上七牛：${redact(String(e2?.message || e2 || e))}`, "api_connection_error", "upstream_unreachable");
+    }
   }
 
-  if (response.ok) return response;
+  if (response.ok) {
+    if (breaker) breaker.record(bucket, true);
+    return response;
+  }
 
   // 非 2xx：错误体很小，读成文本再决定怎么回；流式正文在 2xx 分支已经原样返回，不受影响
   let text = "";
@@ -245,6 +301,12 @@ export async function forwardChat({ url, method = "POST", headers, body, apiKey,
     text = "";
   }
   const verdict = classifyResponse(response.status, text, options);
+  // 熔断记账：账号级失败算失败；模型级 404 说明账号没问题（只是这个模型不行），算成功
+  if (breaker) {
+    if (!verdict.pass && verdict.status === 404) breaker.record(bucket, true);
+    else if (!verdict.pass) breaker.record(bucket, isAccountLevelFailure(verdict.status) ? false : true);
+    else if (response.status === 401) breaker.record(bucket, false);
+  }
   if (verdict.pass) {
     const headersOut = new Headers(response.headers);
     if (verdict.signIn) headersOut.set("x-magpie-sign-in", verdict.signIn);

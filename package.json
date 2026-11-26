@@ -1,6 +1,6 @@
 {
   "name": "magpie-qiniu",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "七牛云 AI 大模型推理（api.qnaigc.com）的 Magpie 插件：sk- 密钥 / AK-SK 登录、91 个模型、资源包与余额用量窗口。仓库根级入口，支持 magpie plugin add github:cat-clash/magpie-qiniu 直装",
   "type": "module",
   "main": "./index.mjs",

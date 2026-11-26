@@ -1,7 +1,11 @@
 // 插件钩子形状测试：只检查 Magpie 契约形状，不发起真实网络请求。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { QiniuPlugin, _internal } from "../index.mjs";
+import { VERSION } from "../src/config.mjs";
+
+const pluginPkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 const FAKE_KEY = "sk-" + "A1b2C3d4E5f6G7h8";
 const FAKE_AK = "AK" + "0000000000000001";
@@ -103,8 +107,9 @@ test("diagnostics 钩子：快照可序列化且不含完整假凭据", async ()
   assert.equal(text.includes(FAKE_AK + ":" + FAKE_SK), false);
 });
 
-test("_internal 入口：对象存在且版本号为 1.0.0", () => {
+test("_internal 入口：对象存在，版本号与 config.mjs / package.json 三处一致", () => {
   assert.equal(typeof _internal, "object");
   assert.ok(_internal);
-  assert.equal(_internal.VERSION, "1.0.0");
+  assert.equal(_internal.VERSION, VERSION);
+  assert.equal(VERSION, pluginPkg.version, "config.mjs 的 VERSION 必须与 plugin/package.json 同步");
 });

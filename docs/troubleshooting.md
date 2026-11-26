@@ -138,6 +138,24 @@
 - **定位**：`/v3/stat/usage` 同 IP **5 req/s**。多账号共用一个出口 IP 时很容易超。插件已有 30 秒缓存（`usageCacheMs`，下限 5000）与回溯天数限制（`dailyUsageDays`，默认 7，夹紧 1..31）。
 - **处理**：把 `usageCacheMs` 调**大**（比如 120000），回溯天数调小；不要为了"看起来更实时"把它压到 5000 又抱怨被限流。查询跨度也有硬限制：`day` ≤31 天、`hour` ≤7 天，超限直接报错（上游对明细最长只查 100 天）。
 
+### 插件回 `breaker_open`（429，本地熔断）
+
+- **现象**：`error.code = "breaker_open"`，`message` 里带「本地熔断」，`retry-after` 指向冷却结束时刻；上游日志里这段时间**没有**新请求。
+- **定位**：这是插件自己拦的，不是七牛拦的。该账号连续 `401/402/403/429` 达到 `breakerThreshold`（默认 5）次 → 本地 open；冷却 `breakerCooldownMs`（默认 30 分钟）后进入 half-open，放行一个探测请求：成功关闭，失败则翻倍退避（30min → 1h → 2h → 4h → 8h 封顶）。
+- **为什么这么设计**：TPD 是日窗口、欠费是结清才恢复，这两种状态下宿主原地重试只会白撞上游、把限流窗口拖得更长。
+- **处理**：
+  - 想立刻恢复：`magpie provider off qiniu-ai` 再 `on`（进程内状态随之重建），或直接换成另一个账号；
+  - 想调松：把 `breakerThreshold` 调大、`breakerCooldownMs` 调小；
+  - 想关掉：`breakerThreshold: 0`；
+  - 想知道现在开着哪些桶：看 `magpie plugin diagnostics magpie-qiniu-lite` 的 `breaker.open`。
+- **注意**：熔断状态只在内存里，**不落盘** —— 进程重启即清空，不会出现「配置文件把账号永久锁死」。
+
+### 请求明明不多却被拉长间隔（`pacingMinMs`）
+
+- **现象**：并发批量打同一个账号时明显变慢，但都成功。
+- **定位**：出站节奏闸按 `pacingMinMs`（默认 800ms）+ `pacingJitterMs`（默认 400ms）把同一账号的相邻请求拉开，这是**故意的**，为了让每分钟的请求分布先落进 RPM/TPM 窗口。
+- **处理**：确认自己没撞过 TPM 再调小（`pacingMinMs: 0` 只关间隔闸，抖动仍生效）；不同账号各有独立时间轴，互不拖累。
+
 ## 6. 流式与超时
 
 ### 流式回答中途断掉
