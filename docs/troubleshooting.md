@@ -83,10 +83,19 @@
 
 ### `insufficient_quota` / 402（余额或资源包不足）
 
-- **现象**：插件返回 402，`message` 是中文提示（余额 / 资源包不足），`type = "insufficient_quota"`。
+- **现象**：上游返回 402，插件把它改写成 429，`message` 是中文提示（余额 / 资源包不足），`type = "insufficient_quota"`。
 - **定位**：`magpie quota` 或账号卡片看余额与资源包；上游 `message` 会区分余额不足与资源包不足。
 - **处理**：充值或买资源包。**恢复时机**：上游扣费判定随入账恢复，面板数字最长再滞后约 15 分钟，插件侧缓存默认 30 秒。详见 [FAQ Q17](./faq.md)。
-- **注意**：上游返 402 时插件保留原状态码（不会改写），只有 403/503 那类"模型不可用"才会被改成 404。
+- **注意**：402 会被插件**改写成 429 + `retry-after: 900`**（`code = balance_insufficient`），这样宿主会去切下一个账号而不是把整家供应商当故障；只有 403/503 那类"模型不可用"才会被改成 404。
+
+### `Account is suspended due to billing status`（403，账号停用）
+
+- **现象**：403，body 形如
+  `{"error":{"message":"Account is suspended due to billing status (request_id: chatcmpl-…)","type":"access_denied_error","code":"account_billing_suspended"}}`，
+  GUI 账号卡片同时写着"现金余额 ¥-x.xx（请充值或领资源包）"。
+- **定位**：**账号级欠费停用**，不是 Key 的问题，也不是限流。余额为负（哪怕只负 ¥1.23）上游就会整号停掉；这把 Key 换到别处也一样 403。
+- **处理**：充值或领资源包，等账单结清（上游约 20 分钟解除）。插件把它改写成 **429 + `retry-after: 1200`**（`code = arrears`），宿主会退避而不是标记账号需要重登 —— 2026-11-27 之前这条规则没覆盖这个文案，插件会原样透传裸 403。
+- **验证**：`magpie quota qiniu-ai` 看"现金余额"窗口；余额转正后 `magpie provider test qiniu-ai <model>` 应回到 200。
 
 ### `Request not allowed`（403，欠费）
 
@@ -121,6 +130,7 @@
 - **现象**：429，`message` 含 `UID rate limit reached for TPD`（也可能是 RPM / TPM 字样）。
 - **定位**：TPD = Tokens Per Day，**按账号**限的日 token 量，不是按 Key。RPM / TPM 是分钟级。`magpie provider test qiniu-ai <model>` 单条能过、批量并发就 429，基本就是撞了这一层。
 - **处理**：把 option `maxConcurrency` 调小（默认 4，范围 1..1000，宿主侧的每-provider 上限会覆盖它）；长任务改串行或分时段跑；确实需要更高配额，联系七牛客服提升。插件不重试、不排队 —— 429 原样交给宿主的退避与故障切换。
+- **插件补的 `retry-after`**：上游全站不返 `retry-after`（实测 0 个），所以插件自己算一个再交给宿主 —— `TPD` → 下一个 **+08 零点**（夹在 60..86400 秒），`RPM`/`TPM` → **60 秒**，`code` 分别是 `account_daily_quota` / `account_rate_limited`。这样宿主不会用固定兜底把账号锁到天级。注意 TPD 是**按账号**算的：换 Key 无效，只能等日界或降并发。
 
 ### 用量面板报速率限制 / 数字不刷新
 

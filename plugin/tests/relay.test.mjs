@@ -12,6 +12,8 @@ import {
   classifyResponse,
   forwardChat,
   apiKeyOf,
+  nextDayStartMs,
+  rateLimitBackoff,
   PASS_HEADERS,
 } from "../src/relay.mjs";
 import { USER_AGENT, INFER_BASE } from "../src/config.mjs";
@@ -223,6 +225,49 @@ test("403 欠费改判 429 arrears", () => {
     headers: { "retry-after": "1200" },
     signIn: undefined,
   });
+});
+
+test("403 账户欠费停用（实测 account_billing_suspended）也走 arrears 改写", () => {
+  // 2026-11-27 实测：sk- Key 直连 api.qnaigc.com 返回 403 + code=account_billing_suspended。
+  // 改写前 classifyResponse 返回 { pass: true } —— 裸 403 会让宿主把账号当"被拒"。
+  const raw =
+    '{"error":{"message":"Account is suspended due to billing status (request_id: chatcmpl-1b588dd88b9f41f4a6768aeb63d006c2)","type":"access_denied_error","code":"account_billing_suspended"}}';
+  const got = classifyResponse(403, raw);
+  assert.strictEqual(got.pass, false);
+  assert.strictEqual(got.status, 429);
+  assert.strictEqual(got.body.error.code, "arrears");
+  assert.strictEqual(got.body.error.type, "insufficient_quota");
+  assert.strictEqual(got.headers["retry-after"], "1200");
+  assert.ok(got.body.error.message.includes("Account is suspended due to billing status"));
+  assert.strictEqual(got.signIn, undefined);
+});
+
+test("429 TPD 补 retry-after 到下一个 +08 零点（上游没有这个头）", () => {
+  const now = Date.parse("2026-11-27T14:01:39+08:00");
+  const got = classifyResponse(429, "UID rate limit reached for TPD (domestic) for UID (request_id: chatcmpl-6ddfd60b)", { now });
+  assert.strictEqual(got.pass, false);
+  assert.strictEqual(got.status, 429);
+  assert.strictEqual(got.body.error.code, "account_daily_quota");
+  assert.strictEqual(got.body.error.type, "rate_limit_error");
+  // 14:01:39 → 次日 00:00 = 9h58m21s
+  assert.strictEqual(got.headers["retry-after"], "35901");
+  assert.strictEqual(got.headers["retry-after"], String((nextDayStartMs(now) - now) / 1000));
+  assert.ok(got.body.error.message.includes("chatcmpl-6ddfd60b"));
+  assert.strictEqual(got.signIn, undefined);
+});
+
+test("429 RPM / TPM 只退避 60 秒", () => {
+  const now = Date.parse("2026-11-27T14:01:39+08:00");
+  for (const kind of ["RPM", "TPM"]) {
+    const got = classifyResponse(429, `UID rate limit reached for ${kind} for UID`, { now });
+    assert.strictEqual(got.body.error.code, "account_rate_limited");
+    assert.strictEqual(got.headers["retry-after"], "60");
+  }
+});
+
+test("TPD 退避夹在 [60, 86400] 内，绝不吐 0", () => {
+  assert.strictEqual(rateLimitBackoff(Date.parse("2026-11-27T23:59:30+08:00"), "TPD"), 60);
+  assert.strictEqual(rateLimitBackoff(Date.parse("2026-11-27T00:00:01+08:00"), "TPD"), 86_399);
 });
 
 test("403 额度超限改判 429 quota_exceeded", () => {

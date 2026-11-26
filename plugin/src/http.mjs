@@ -187,7 +187,7 @@ const AUTH_HINTS = [
   "key 不存在",
 ];
 
-const NOT_AUTH_HINTS = ["not allowed", "quota", "balance", "余额", "欠费", "model groups", "not available", "price"];
+const NOT_AUTH_HINTS = ["not allowed", "quota", "balance", "余额", "欠费", "model groups", "not available", "price", "billing", "suspend", "overdue", "停用"];
 
 /** 只有「凭据本身不行」才返回 expired；欠费/限额/模型不可用绝不标记登录失效。 */
 export function classifyAuthError(status, error, body) {

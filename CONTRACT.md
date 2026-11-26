@@ -35,7 +35,7 @@
 - `GET /v1/models` 返回 `{object:"list",data:[{id,object,created,owned_by,context_length,max_tokens,service_status}]}`。
   - `max_tokens` 可能为 `0`（表示未给）→ 必须回退默认，**绝不能把 `limit.output` 写成 0**。
   - `service_status` 已知值 `available`；其余取值待 A1 确认（未知值一律 `status:"deprecated"` 隐藏）。
-- 常见错误文案（用于分档，来自 A2/A3 文档摘录）：402 余额/资源包不足；403 `Request not allowed`（欠费）/`apikey monthly quota exceeded`/`model … is not available in your assigned model groups`；503 `the price of the model is not set`；429 `UID rate limit reached for TPD (oversea) for UID`/RPM/TPM。
+- 常见错误文案（用于分档，来自 A2/A3 文档摘录）：402 余额/资源包不足；403 `Request not allowed`（欠费）/`Account is suspended due to billing status`（实测，账号停用）/`apikey monthly quota exceeded`/`model … is not available in your assigned model groups`；503 `the price of the model is not set`；429 `UID rate limit reached for TPD (oversea|domestic) for UID`/RPM/TPM。
 - `/v3/stat/usage` 限流：同 IP 5 req/s；`granularity=day` 跨度 ≤31 天，`hour` ≤7 天；`timezone` 需 IANA 名（默认 `Asia/Shanghai`）。
 - 订阅积分**没有开放接口**，余额单位是**元 × 1e8**（要除回去）。
 
@@ -133,6 +133,8 @@ forwardChat({ url, method, headers, body, apiKey, signal, timeoutMs, fetchImpl, 
 5. 其它 → 501 `not_implemented`。
 6. 401 上游 → 原样透传 + 头 `x-magpie-sign-in: expired`。
 7. 402 → 重写为中文可操作提示（type `insufficient_quota`，先 `clone()` 再读正文，不许消费掉原 body）。
+7b. 403 且正文含 `billing`/`suspended`/`arrears`/`overdue`/`欠费`/`停用` → **429 `arrears`** + `retry-after: 1200`。实测文案 `Account is suspended due to billing status`（`code=account_billing_suspended`，2026-11-27）：裸 403 会让宿主把账号当"被拒"。
+7c. 429 且正文含 `rate limit reached for TPD|RPM|TPM` → 保留 429，**插件自己补 `retry-after`**（上游全站无此头）：TPD → 下一个 +08 零点（夹 60..86400 秒，`code=account_daily_quota`），RPM/TPM → 60 秒（`code=account_rate_limited`）。
 8. 403 且正文含 `is not available`/`model_not_found`/`模型不支持`/`price of the model is not set` → 改 **404** + `x-magpie-sign-in: kept`，type `not_available_error`。
 9. 其余状态原样透传，流式正文不改写。
 10. `getAuth()` 抛 → 401 `sign_in_required` + `x-magpie-sign-in: expired`。

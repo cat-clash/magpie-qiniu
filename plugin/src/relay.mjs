@@ -89,6 +89,32 @@ export function notImplemented(path) {
 }
 
 // ---- 错误分档 ---------------------------------------------------------------
+const DAY_MS = 86_400_000;
+const CN_TZ_MS = 8 * 3_600_000; // 七牛的日界按 +08 算，写死偏移以摆脱运行环境时区
+
+/** 下一个自然日 00:00 (+08) 的毫秒时间戳。TPD 重置就在那一刻。 */
+export function nextDayStartMs(nowMs) {
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  return Math.floor((now + CN_TZ_MS) / DAY_MS) * DAY_MS + DAY_MS - CN_TZ_MS;
+}
+
+/** 把「到重置点的秒数」夹进 [60, 86400]：retry-after 太小会被宿主当立即重试，太大等于锁号。 */
+function retryAfterUntil(nowMs, untilMs) {
+  const secs = Math.round((untilMs - nowMs) / 1000);
+  return Math.min(86_400, Math.max(60, secs));
+}
+
+/**
+ * 429 账号级限流的退避时间。上游全站**没有** retry-after 头（research/upstream-probe.md:1056 实测 0 个），
+ * 不补一个，宿主只能走固定兜底，容易把账号锁到天级（见 KNOWN_ISSUES BUG #1）。
+ *   · TPD（日 token 量，按账号）→ 下一个 +08 零点
+ *   · RPM / TPM（分钟级）→ 60 秒
+ */
+export function rateLimitBackoff(nowMs, kind) {
+  if (String(kind).toUpperCase() === "TPD") return retryAfterUntil(nowMs, nextDayStartMs(nowMs));
+  return 60;
+}
+
 const RULES = [
   {
     // 上游 503 且「模型没标价」= 模型 id 写错/该模型未开通，改判 404，别让宿主当服务端故障反复切号
@@ -102,9 +128,28 @@ const RULES = [
       message: `七牛账户余额或资源包不足，充值后约 15 分钟恢复。原始错误：${clip(t)}` }),
   },
   {
-    match: (s, t) => s === 403 && /request not allowed|arrears|欠费/i.test(t),
+    // 403 欠费 / 停用：文档里的 Request not allowed、arrears，以及实测的
+    // "Account is suspended due to billing status"（code=account_billing_suspended，2026-11-27 实测）。
+    // 这一类必须改写成 429：宿主看到裸 403 会当"账号被拒"，而它其实只是欠费。
+    match: (s, t) => s === 403 && /request not allowed|arrears|欠费|billing|suspended|overdue|停用/i.test(t),
     to: (t) => ({ status: 429, code: "arrears", type: "insufficient_quota", retryAfter: 1200,
       message: `七牛账户处于欠费受限状态，结清后约 20 分钟自动解除。原始错误：${clip(t)}` }),
+  },
+  {
+    // 429 账号级限流（TPD / RPM / TPM）。原文案原样带上，别让用户丢掉 request_id。
+    match: (s, t) => s === 429 && /rate limit reached for (TPD|RPM|TPM)/i.test(t),
+    to: (t, ctx) => {
+      const kind = (/TPD/i.test(t) ? "TPD" : /RPM/i.test(t) ? "RPM" : "TPM").toUpperCase();
+      const retryAfter = rateLimitBackoff(ctx.now, kind);
+      const when = kind === "TPD" ? `约 ${Math.round(retryAfter / 60)} 分钟后（下一个自然日 0 点重置）` : `${retryAfter} 秒后`;
+      return {
+        status: 429,
+        code: kind === "TPD" ? "account_daily_quota" : "account_rate_limited",
+        type: "rate_limit_error",
+        retryAfter,
+        message: `七牛账号触发 ${kind} 限流（按账号计，换 Key 无效），${when}再试。原始错误：${clip(t)}`,
+      };
+    },
   },
   {
     match: (s, t) => (s === 403 || s === 400) && /quota exceeded|monthly quota|额度已用尽|超限/i.test(t),
@@ -134,6 +179,7 @@ function clip(text, n = 240) {
  */
 export function classifyResponse(status, text, options = {}) {
   const quotaFailover = options.quotaFailover !== false;
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
   const raw = String(text || "");
   // 401：Key 失效 → 原样透传 + expired（宿主据此标记账号）
   if (status === 401) {
@@ -152,7 +198,7 @@ export function classifyResponse(status, text, options = {}) {
   // 内容审核 / IP 黑名单 / 其余 4xx：原样给用户看，不切号
   for (const rule of RULES) {
     if (!rule.match(status, raw)) continue;
-    const mapped = rule.to(raw);
+    const mapped = rule.to(raw, { now });
     if (!quotaFailover && (mapped.status === 429)) continue;
     return {
       pass: false,
