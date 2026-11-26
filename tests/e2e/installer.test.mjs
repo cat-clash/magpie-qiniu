@@ -97,7 +97,7 @@ function makeRunner(kind) {
     dir,
     statePath,
     script: join(repoRoot, kind === "ps" ? "install.ps1" : "install.sh"),
-    bin: kind === "ps" ? cmdBin : toPosix(shBin),
+    bin: kind === "ps" ? (isWin ? cmdBin : toPosix(shBin)) : toPosix(shBin),
     cmd: null,
   }
   if (kind === "ps") {
@@ -107,7 +107,9 @@ function makeRunner(kind) {
     runner.cmd = findBash()
     runner.prefix = (script, argv) => [script, ...argv]
   }
-  if (kind !== "ps") {
+  // POSIX 上两种用例都用同一个 bash 桩（pwsh 在 Linux 会直接 exec 带 shebang 的文件，
+  // .cmd 在那边只会被 xdg-open 当成文档去「打开」）；Windows 上 ps 用例仍用 .cmd 桩。
+  if (!isWin || kind !== "ps") {
     try {
       chmodSync(shBin, 0o755)
     } catch {

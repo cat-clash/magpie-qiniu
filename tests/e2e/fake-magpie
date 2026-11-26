@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # fake magpie CLI wrapper for POSIX: lets MAGPIE_BIN point at an executable file.
-# 有的机器只有 bun（本机就没装全局 node），CI 用的是 node：优先 node，退回 bun。
+# Runs fake-magpie.mjs with node when available, otherwise bun.
+# Keep this file ASCII-only and LF-terminated: it is executed directly (mode 100755)
+# by bash *and* by pwsh 7 on Linux/macOS in the e2e suite.
+set -u
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${FAKE_MAGPIE_NODE:-}" ]; then
   exec "$FAKE_MAGPIE_NODE" "$dir/fake-magpie.mjs" "$@"
