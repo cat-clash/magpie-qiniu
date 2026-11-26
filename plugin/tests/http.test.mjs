@@ -368,15 +368,24 @@ test("apiFetch 超时被包成 ApiError（cause 为 abort）", async () => {
     new Promise((resolve, reject) => {
       init?.signal?.addEventListener?.("abort", () => reject(abortError("The operation was aborted")), { once: true });
     });
-  await assert.rejects(
-    apiFetch("https://fake.local/slow", { fetchImpl: fake, timeoutMs: 20 }),
-    (e) => {
-      assert.ok(e instanceof ApiError);
-      assert.equal(e.status, 0);
-      assert.ok(isAbort(e.cause), "cause 应是 abort 错误");
-      return true;
-    },
-  );
+  // AbortSignal.timeout 的计时器是 unref 的：Node 22 的 test runner 在事件循环可空时会把
+  // 还在等的用例判成 cancelledByParent（ERR_TEST_FAILURE: Promise resolution is still
+  // pending but the event loop has already resolved）。这里挂一个 ref'd 的 timer 当锚点，
+  // 让事件循环活到 timeoutMs 触发为止 —— 断言的内容不变。
+  const keepAlive = setTimeout(() => {}, 500);
+  try {
+    await assert.rejects(
+      apiFetch("https://fake.local/slow", { fetchImpl: fake, timeoutMs: 20 }),
+      (e) => {
+        assert.ok(e instanceof ApiError);
+        assert.equal(e.status, 0);
+        assert.ok(isAbort(e.cause), "cause 应是 abort 错误");
+        return true;
+      },
+    );
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
 
 // ── 26. apiFetch：fetch 直接失败（非 abort）→ ApiError 网络错误 ─────────────────
