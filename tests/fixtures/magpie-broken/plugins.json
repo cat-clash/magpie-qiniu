@@ -1,0 +1,7 @@
+{
+  "_fixture": "坏配置，仅供 CI 里跑 tools/check.mjs 用：故意装了两份 spec（重复安装）",
+  "plugins": [
+    { "spec": "github:tk103331/magpie-qiniu-plugin", "options": {} },
+    { "spec": "github:cat-clash/magpie-qiniu", "options": {} }
+  ]
+}

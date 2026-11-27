@@ -24,7 +24,7 @@
 (async () => {
   // 面板自身的版本号：document.title 里只有供应商名，没有可靠版本，所以在这里定常量。
   // 发版时与 plugin/package.json 的 version 一起改，CHANGELOG 也写这个号。
-  const PANEL_VERSION = "1.3.0";
+  const PANEL_VERSION = "1.4.0";
 
   // 与 src/config.mjs 的 DEFAULTS / CLAMP 逐项对齐（测试会拿 config.mjs 直接比，改一处要两处同步）
   const DEFAULTS = {

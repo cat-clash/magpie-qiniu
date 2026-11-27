@@ -404,3 +404,196 @@ export function renderChecks(result, { json = false, color = false } = {}) {
   }
   return lines;
 }
+
+// ── 自愈计划（tools/check.mjs 的 --fix / --apply 用）──────────────────────────
+//
+// 安全口径照抄仓库已有模型（plugin/src/fix.mjs + tools/doctor.mjs 的 --fix/--apply）：
+//   · 纯逻辑层不碰 fs、不 spawn —— 这里只产出「要做哪些命令」，执行全在 CLI 里；
+//   · 默认 dry-run，只有 --apply 才真跑；执行前备份、逐条打印输出；
+//   · **只**自动修两类，其余一律进 manual 让人处理（宁可不动，也不能替用户瞎猜）。
+//
+// 可自动修的两类（且只有这两类）：
+//   1) provider 开关被置 off → magpie provider on <id>
+//   2) 同一插件装了多条 spec  → magpie plugin rm <多余的那条>
+//
+// 绝不自动修的：账号为空 / 账号没 sk- Key / 仓库文件缺失 / Node 版本过低 /
+// 代理缺失或写法不认识 / magpie 不在 PATH / 插件压根没装 / provider 条目不存在。
+// 它们一律不进 actions，只进 plan.manual（人话 + hint），由 CLI 打印成「以下要人工处理」。
+// 这样做是因为这些要么需要用户交互（登录、签发 Key、换 Node），要么改错一步就会把
+// 能用的现场搞坏（比如把唯一那条插件 spec rm 掉）。
+
+/** 计划里允许出现的动作类型；别的一律不生成。 */
+export const REPAIR_KINDS = ["provider-on", "plugin-rm"];
+
+/** 「像官方」的判据：spec 里含这段就优先保留（cat-clash 是仓库所有者的 GitHub 账号）。 */
+const OFFICIAL_SPEC_NEEDLE = "cat-clash/magpie-qiniu";
+
+/**
+ * 从 checkProviderSwitched 的 detail 里取回 provider id。
+ * detail 形如 `qiniu-ai 是 off:true（模型选不到它，请求直接 404）`；
+ * 认不出来就返回空串 —— 宁可不修，也不拿默认 id 乱开。
+ */
+function providerOffIdFromDetail(detail) {
+  const m = String(detail ?? "").match(/^(\S+)\s*是\s*off\s*[:=]\s*true/i);
+  return m ? m[1] : "";
+}
+
+/**
+ * 从 checkPluginInstalled 的 detail 里取回 spec 列表。
+ * detail 形如 `找到 2 条：github:a/x、github:cat-clash/magpie-qiniu`；解析不了返回 []。
+ */
+function specsFromDetail(detail) {
+  const m = String(detail ?? "").match(/^找到\s*\d+\s*条[：:]\s*(.+)$/);
+  if (!m) return [];
+  return m[1]
+    .split(/[、,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * 重复安装该保留哪一条、该 rm 哪几条（规则写在返回值 reason 里，也写进注释）。
+ *
+ * 保留规则（顺序即优先级）：
+ *   1. 恰好一条 spec 含 `cat-clash/magpie-qiniu` → 留它，其余全 rm；
+ *   2. 超过一条都含 → 判断不出谁才是正主 → **不产生任何 rm**；
+ *   3. 一条都不含 → 保留**最后一条**（后装的通常是想用的那份），其余 rm；
+ *   4. 条目不足两条（或根本解析不出 spec）→ 无事可做。
+ *
+ * @param {string[]} specs
+ * @returns {{keep:string, remove:string[], reason:string}}
+ */
+function planDuplicateRemoval(specs) {
+  const list = [...new Set((Array.isArray(specs) ? specs : []).map((s) => String(s ?? "").trim()).filter(Boolean))];
+  if (list.length < 2) return { keep: list[0] ?? "", remove: [], reason: "不足两条，无可移除" };
+
+  const official = list.filter((s) => s.toLowerCase().includes(OFFICIAL_SPEC_NEEDLE));
+  if (official.length === 1) {
+    return {
+      keep: official[0],
+      remove: list.filter((s) => s !== official[0]),
+      reason: `保留含 ${OFFICIAL_SPEC_NEEDLE} 的那条（像官方仓库）`,
+    };
+  }
+  if (official.length > 1) {
+    // 两条都像官方（比如一个 @latest 一个带 tag）：分不清真身，宁可不动
+    return { keep: "", remove: [], reason: `有 ${official.length} 条都含 ${OFFICIAL_SPEC_NEEDLE}，判断不出该保留哪条` };
+  }
+  const keep = list[list.length - 1];
+  return { keep, remove: list.slice(0, -1), reason: "都不像官方 spec → 保留最后一条（后装的通常是想用的那份）" };
+}
+
+/**
+ * 把宿主侧体检结论翻译成「要跑哪些命令、哪些要人工处理」。
+ *
+ * 动作顺序（重要）：plugin-rm 全部排在 provider-on 之前 —— `magpie plugin rm`
+ * 有可能把 provider 置 off，把 provider on 放最后才能保证最终状态是「开着」。
+ *
+ * @param {{checks?: Array}} [input] summarize().checks 或原始 checks 数组
+ * @returns {{
+ *   actions: {id:string, kind:string, command:string, args:string[], why:string}[],
+ *   empty: boolean,
+ *   manual: string[]
+ * }}  actions 为空的判定用 empty / isEmptyRepair，不要自己数长度
+ */
+export function planRepair({ checks } = {}) {
+  const list = (Array.isArray(checks) ? checks : []).filter((c) => c && typeof c === "object");
+  const actions = [];
+  const manual = [];
+  const handled = new Set();
+
+  // ① 重复安装 → plugin rm
+  const dupCheck = list.find((c) => c.id === "plugin-installed" && c.level === "warn");
+  if (dupCheck) {
+    handled.add(dupCheck.id);
+    const dup = planDuplicateRemoval(specsFromDetail(dupCheck.detail));
+    for (const spec of dup.remove) {
+      actions.push({
+        id: `plugin-rm:${spec}`,
+        kind: "plugin-rm",
+        command: "magpie",
+        args: ["plugin", "rm", spec],
+        why: `同一插件装了多条：${dup.reason}，移除 ${spec}`,
+      });
+    }
+    if (!dup.remove.length) {
+      manual.push(`插件安装：${dupCheck.detail || "装重了"} —— 判断不出该保留哪一条（${dup.reason}），先 magpie plugin ls 人工确认再 magpie plugin rm <spec>`);
+    }
+  }
+
+  // ② provider off:true → provider on（放最后）
+  const provCheck = list.find((c) => c.id === "provider-switched" && c.level === "bad");
+  if (provCheck) {
+    const pid = providerOffIdFromDetail(provCheck.detail);
+    if (pid) {
+      handled.add(provCheck.id);
+      actions.push({
+        id: `provider-on:${pid}`,
+        kind: "provider-on",
+        command: "magpie",
+        args: ["provider", "on", pid],
+        why: `${pid} 当前是 off:true（模型选不到它，请求直接 404）；provider on 打开，不用重启 magpie`,
+      });
+    } else {
+      // detail 认不出 id（比如「providers.json 里没有 id=... 的条目」）：这不是开关问题，不修
+      manual.push(`provider 开关：${provCheck.detail || "状态异常"} —— 没有可开的 id，先 magpie provider ls 人工确认`);
+      handled.add(provCheck.id);
+    }
+  }
+
+  // ③ 其余 bad/warn：一律人工（账号、Key、仓库文件、Node、代理、magpie 路径、插件没装）
+  for (const c of list) {
+    if (c.level !== "bad" && c.level !== "warn") continue;
+    if (handled.has(c.id)) continue;
+    manual.push(`${c.label}：${c.detail || "（无细节）"} —— 要人工处理：${c.hint || "见 node tools/check.mjs 的提示"}`);
+  }
+
+  return { actions, empty: actions.length === 0, manual };
+}
+
+/** 单条动作 → 一行命令（CLI 打印与测试共用同一口径）。 */
+function commandOf(action) {
+  const args = Array.isArray(action?.args) ? action.args.map((a) => String(a)) : [];
+  return [String(action?.command ?? ""), ...args].filter(Boolean).join(" ");
+}
+
+/**
+ * 计划 → 人话（一行一件事，每行都带完整命令，方便直接复制粘贴）。
+ * 空计划返回空数组。注意：它只描述 actions，**人工项**在 plan.manual 里，
+ * 由 CLI 加「以下要人工处理」表头打印（见 describeManual）。
+ *
+ * @param {object} plan planRepair 的返回值
+ * @returns {string[]}
+ */
+export function describeRepair(plan) {
+  const actions = Array.isArray(plan?.actions) ? plan.actions : [];
+  return actions.map((a) => {
+    const args = Array.isArray(a?.args) ? a.args.map((s) => String(s)) : [];
+    const subject = args.length ? args[args.length - 1] : "";
+    const cmd = commandOf(a);
+    if (a?.kind === "provider-on") return `provider ${subject} 当前是 off → ${cmd}`;
+    if (a?.kind === "plugin-rm") return `插件装重了，移除多余的 ${subject} → ${cmd}`;
+    return `${String(a?.why || "执行")} → ${cmd}`;
+  });
+}
+
+/**
+ * 计划里「要人工处理」的那些 → 人话（一行一条，CLI 用「! 」前缀打印）。
+ * 单独拆出来是为了让调用方想忽略人工项时能明确地忽略，而不是靠数 actions 长度。
+ *
+ * @param {object} plan planRepair 的返回值
+ * @returns {string[]}
+ */
+export function describeManual(plan) {
+  return (Array.isArray(plan?.manual) ? plan.manual : []).map((s) => String(s)).filter(Boolean);
+}
+
+/**
+ * 计划是否为空（空 = CLI 说「没有能自动修的东西」、不备份、不跑任何命令）。
+ * @param {object} plan planRepair 的返回值
+ * @returns {boolean}
+ */
+export function isEmptyRepair(plan) {
+  const actions = Array.isArray(plan?.actions) ? plan.actions : [];
+  return actions.length === 0;
+}

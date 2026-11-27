@@ -257,7 +257,7 @@ magpie plugin add github:cat-clash/magpie-qiniu
 | `costSampleMs` | number | `600000` | 60000..3600000，两次费用取样最小间隔 |
 | `claudeBypass` | boolean | `false` | 把原厂 Claude 透传通路（`/bypass/anthropic`）纳入模型表 |
 | `keyLabel` | string | `""` | ≤40，给自动签发的 Key 打备注 |
-| `stateDir` | string | `""` | ≤300，状态目录（当前仅保留） |
+| `stateDir` | string | `""` | ≤300，状态目录；设了会把模型健康快照写到 `<stateDir>/model-health.json`（空 = 纯内存、零 IO） |
 | `webSearch` | string | `auto` | `auto` / `on` / `off`；七牛的 `tools:{type:"web_search"}` 上游会忽略，本项只记录不注入 |
 | `pacingMinMs` | number | `800` | 0..60000，**出站节奏闸**：同账号相邻放行的最小间隔，`0` = 关掉间隔闸 |
 | `pacingJitterMs` | number | `400` | 0..60000，每次放行叠加的随机抖动上限 |
@@ -290,12 +290,14 @@ magpie plugin add github:cat-clash/magpie-qiniu
 ## 诊断与自带工具
 
 仓库根带几个**不进插件包**的脚本：**check**（宿主侧体检）、**doctor**（账号侧诊断）、
-**score**（模型评分与推荐）和 **contract-diff**（守住 options 三处文档不漂移）。它们都在仓库根，
-装到 magpie 里的插件本体不依赖它们：`check` / `doctor` 反向往 `plugin/` 里取钩子与纯函数，
-`score` 只读模型目录，`contract-diff` 只读仓库里的三个文件。
+**score**（模型评分与推荐）、**usage**（用量看板）和 **contract-diff**（守住 options 三处文档
+不漂移）。它们都在仓库根，装到 magpie 里的插件本体不依赖它们：`check` / `doctor` 反向往
+`plugin/` 里取钩子与纯函数，`score` 只读模型目录，`usage` 只读 `plugin-auth.json` 再问上游，
+`contract-diff` 只读仓库里的三个文件。
 
 **分工一句话**：`check` 查**宿主侧**（本机装得对不对），`doctor` 查**账号侧**（这账号还能不能用），
-`score` 查**模型侧**（该挑哪个跑）。三件互不重叠，谁出问题跑谁。
+`score` 查**模型侧**（该挑哪个跑），`usage` 查**用量侧**（tokens 和钱花在哪一天、哪个模型上）。
+四件互不重叠，谁出问题跑谁。
 
 ### doctor：账号侧诊断
 
@@ -410,6 +412,36 @@ check **一条网络请求都不发**，只看本机装成什么样 —— 所�
 一个字都出不来。check 直接把这项标成 `✗`，并在末尾给出「最可能的一环」和那条
 `magpie provider on`。
 
+**`--fix` / `--apply`：只代跑能代跑的两类**
+
+```powershell
+node tools/check.mjs --fix       # 空跑：只打印将执行的 magpie 命令，一个字节都不写
+node tools/check.mjs --apply     # 真执行：先备份，再逐条跑完
+```
+
+七项检查里挑出**两类能自动修**的，就这两类：
+
+| 可自动修 | 会执行的命令 |
+|---|---|
+| provider 被置成 `off` | `magpie provider on <id>` |
+| 同一插件装了多条 spec（宿主只认其中一份） | `magpie plugin rm <多余 spec>` —— 保留 `cat-clash/magpie-qiniu` 那条 |
+
+安全模型四条：
+
+- **`--fix` 是 dry-run**，只打印将执行的命令，不写文件、不调 magpie；先看一遍，认了再 `--apply`
+  （`--apply` 隐含 `--fix`，两个都给时按 `--apply` 走）。
+- **`--apply` 先备份，再动手**：只备份计划里**真会动到**的文件 —— 有 `plugin rm` 就备份
+  `plugins.json`，有 `provider on` 就备份 `providers.json`，存成同目录的
+  `<文件名>.bak-check-<yyyyMMdd-HHmmss>`；备份失败就**一条命令都不执行**（宁可不改，也不留没退路的现场）。
+- **逐条 `spawnSync` 跑 magpie CLI**，每条命令的输出（stdout/stderr）原样打屏；某条失败**不中断**，
+  剩下的照跑完，末尾汇总「成功 N / 失败 M」，有失败时退出码 `1`。magpie 取 `MAGPIE_BIN`，没设就按 PATH 找。
+- **只修这两类**，其余进「以下要人工处理」清单，一条都不动：账号为空、Key 缺失、仓库文件缺失、
+  Node 版本过低、代理缺失，以及「装重了但判断不出该留哪一条」这种拿不准的情况。
+
+它**不重启 magpie**（重启会把 provider 置回 off，还可能丢账号状态；`provider on` 下条命令就生效），
+也**不碰 `plugin-auth.json`**。跑完重跑一次 `node tools/check.mjs` 验证改到位没有，再转 doctor 查账号侧。
+`--json` 与 `--apply` 同时给时只输出计划 JSON、**不执行** —— 真执行要人盯着逐条输出。
+
 ### score：挑模型
 
 91 个模型按用途打分排序，不用再翻 catalog 逐行比。分数 `0..1`，由四个维度加权求和：
@@ -428,6 +460,7 @@ node tools/score.mjs --all --json > models.json   # 全量机器可读，自己�
 | `--limit N` | 只显示前 N 名（默认 10） |
 | `--all` | 列出全部模型（覆盖 `--limit`） |
 | `--exclude a,b,c` | 手动排除模型 id，逗号分隔 |
+| `--dead-from <file>` | 读健康快照，把里面判死的模型并进排除列表（见下） |
 | `--json` | 机器可读（含权重、四维分与总分） |
 
 | profile | 权重偏向 | 什么时候用 |
@@ -459,9 +492,24 @@ node tools/score.mjs --all --json > models.json   # 全量机器可读，自己�
 
 两条使用提醒：catalog 里有 **6 条 `max_tokens=0`、1 条 `context_length=0` 的脏数据**，
 它们不代表「零能力」，score 按默认上限兜底；另外，被健康快照判死的模型分数可能仍然很高，
-但调了必失败 —— score 默认**不排除**任何模型（它读不到宿主内存里的健康态），只在结尾给出
-「五档各自前 3」；挑之前在 `magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth`
-里核实一下，或用 `--exclude` 手动剔掉（见第 9 节排错）。
+但调了必失败 —— score 默认**不排除**任何模型（宿主内存里的健康态它读不到），只在结尾给出
+「五档各自前 3」。
+
+**`--dead-from <file>`：按健康快照自动剔除判死的模型**
+
+插件设了 option `stateDir` 之后，会把自己那份模型健康快照写到 **`<stateDir>/model-health.json`**
+（`{ version, savedAt, entries }`，其中 `dead` 是算出来的，不落盘）。把这份文件喂给 score：
+
+```powershell
+node tools/score.mjs --profile coding --dead-from <stateDir>/model-health.json
+```
+
+快照里判死的模型会并进排除列表，不用再手抄 `--exclude`，排完还会打一行
+`ℹ --dead-from <file>：排除 N 个已判死模型（<model-id>, …）` 方便对账。三条边界：不给这个参数时
+**行为完全不变**；文件读不到或不是合法 JSON 时只打一行 `ℹ` 提示、按未排除继续；`--json` 输出里
+多一个 `excludedBy`，取值 `"flag"`（`--exclude` 起作用，优先级更高）/ `"dead-file"`（来自快照）/
+`"none"`（没排除）。
+挑之前也可以直接看 `magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth`（见第 9 节排错）。
 
 **contract-diff**：`node scripts/contract-diff.mjs`
 
@@ -469,6 +517,55 @@ node tools/score.mjs --all --json > models.json   # 全量机器可读，自己�
 `CONTRACT.md` 反引号字段，报三类差集 —— **README 漏写**（用户看不到开关）、**代码没实现**
 （填了不生效）、**契约没提**。退出码 `0` 无差集 / `2` 有差集 / `1` 缺文件；`--json` 出机器可读结果。
 改了 options 定义之后跑一次，三处就不会各说各话。
+
+### usage：用量看板
+
+把上游 `/v3/stat/usage` 的用量序列摊成**按天**和**按模型**两张表，回答「token 花在哪天、哪个
+模型上」。不经过插件，直接读 `plugin-auth.json` 里这把 Key 打上游；`tk-` 临时 Key 无权查用量，
+会走退出码 `1`。
+
+```powershell
+node tools/usage.mjs                               # 近 7 天，按天 + 按模型
+node tools/usage.mjs --days 3 --granularity hour   # 近 3 天，按小时聚合
+node tools/usage.mjs --days 30 --cost              # 顺带打费用接口，总结行带花费
+```
+
+示例（实际输出以运行结果为准）：
+
+```text
+七牛云用量 · qiniu-ai · <账号别名>（sk- Key）· 近 7 天 / day
+
+按天
+日期        输入      输出      合计
+2026-11-21  <输入>    <输出>    <合计>
+2026-11-22  <输入>    <输出>    <合计>
+...（省略，只列上游返桶的那些日期）
+
+按模型
+模型          合计      占比
+<model-id>    <合计>    <xx.x%>
+<model-id>    <合计>    <xx.x%>
+
+近 7 天 <X> tokens · 花费 ¥<Y> · 日均 <Z>
+```
+
+不带 `--cost` 时总结行**省略「花费」那段**（不写 ¥0 骗人）；带 `--cost` 才多打一次费用接口，
+口径按天数自动选 `day` / `week` / `month`，并在最后补一行「上游有 5–15 分钟延迟」。
+
+| 参数 | 作用 |
+|---|---|
+| `--days <1..31>` | 统计天数（默认 `7`）；越界或超过 `granularity` 的上限会被**夹紧**并在 stderr 打一行 `[!]` |
+| `--granularity day\|hour` | 桶粒度（默认 `day`；`hour` 上游上限 7 天，超过自动夹到 7） |
+| `--cost` | 额外查费用，总结行才带花费 |
+| `--json` | 机器可读：`{ days, granularity, daily, models, total, cost }` |
+| `--auth <path>` | 指定别的 `plugin-auth.json`（默认 `$MAGPIE_CONFIG_DIR` 或 `~/.config/magpie`） |
+| `--provider <id>` | 换 provider id（默认 `qiniu-ai`） |
+
+三条口径：上游单位是 **kToken**，工具内部在 `usage-report.mjs` 的 `toTokens()` 一处 **×1000**
+换成 token（别的导出都按 token 走，不会再乘一遍）；日期取上游已经分好的桶，不按本机时区重切；
+不传 `--cost` 就不发任何一个费用请求。退出码 `0` 成功 / `1` 上游失败（打印脱敏后的原文 +
+可操作提示，如 401 提示重登、429 提示限流）/ `2` 用法错误（`--days` 不是整数、
+`--granularity` 不是 `day|hour`）。
 
 ## 测试
 
@@ -507,6 +604,7 @@ $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\
 | 某个模型突然从列表消失 | 健康快照连续 3 次「模型级」失败判了 dead，插件把它 `status` 改成 `deprecated` 藏起来，宿主不再路由；等 30 分钟（`ttlMs`）自动重新给机会，或重启宿主进程立即清空。`magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth` 可查哪些模型被判死 |
 | 插件装了但模型不出字 | 先跑 `node tools/check.mjs`（宿主侧，秒回、不联网）：多半是 provider 被置成 `off`（`plugin off/on` 或重启 magpie 都会），check 会标 `✗` 并给出 `magpie provider on qiniu-ai`；check 全通再跑 `node tools/doctor.mjs` 查账号侧 |
 | 不知道选哪个模型 | `node tools/score.mjs --profile <用途>`（`balanced` / `coding` / `long-context` / `vision` / `cheap`），91 个模型按用途打分排序，见[诊断一节](#score挑模型) |
+| 想确认这几个工具的组合用法 | 按顺序跑 `node tools/check.mjs && node tools/doctor.mjs && node tools/usage.mjs --cost`：check 查宿主侧（秒回、不联网）**要先过**，doctor 再查账号侧，最后 usage 对一遍 tokens 与花费；`&&` 保证前一步退出码 `1` 时后面不再跑 |
 
 ## 开发
 

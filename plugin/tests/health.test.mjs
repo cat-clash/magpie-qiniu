@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHealthStore, HEALTH_DEFAULTS } from "../src/health.mjs";
+import { join } from "node:path";
+import { createHealthStore, HEALTH_DEFAULTS, healthStatePath } from "../src/health.mjs";
 
 /** 可控时钟：所有用例都用注入的 now，绝不碰真实时间。 */
 function makeStore(opts = {}) {
@@ -232,3 +233,223 @@ test("HEALTH_DEFAULTS：默认值与文档一致且不可被改写", () => {
   assert.equal(snap.threshold, HEALTH_DEFAULTS.failureThreshold);
   assert.equal(snap.ttlMs, HEALTH_DEFAULTS.ttlMs);
 });
+
+// ── 可选持久化 ───────────────────────────────────────────────────────────────
+// 这些用例**只用注入的假 fs**，绝不碰真实磁盘（不写 ~/.config、不写 tmp）。
+
+/** 固定时钟基准：比 1e6 大得多，方便构造「31 分钟前」这种正的 deadAtMs。 */
+const T0 = 10_000_000_000;
+const STATE_PATH = "/tmp/x/model-health.json";
+
+/**
+ * 假 fs：只实现 health.mjs 用的三个方法，记录每一次调用。
+ * @param {{text?: string|null, writeThrows?: boolean}} [init] text=null 表示文件不存在
+ */
+function fakeFs({ text = null, writeThrows = false } = {}) {
+  const calls = [];
+  return {
+    calls,
+    reads: () => calls.filter((c) => c.op === "readFileSync"),
+    writes: () => calls.filter((c) => c.op === "writeFileSync"),
+    mkdirs: () => calls.filter((c) => c.op === "mkdirSync"),
+    readFileSync(path, enc) {
+      calls.push({ op: "readFileSync", path, enc });
+      if (text === null) {
+        const e = new Error(`ENOENT: no such file or directory, open '${path}'`);
+        e.code = "ENOENT";
+        throw e;
+      }
+      return text;
+    },
+    writeFileSync(path, data, enc) {
+      calls.push({ op: "writeFileSync", path, data, enc });
+      if (writeThrows) {
+        const e = new Error("EACCES: permission denied");
+        e.code = "EACCES";
+        throw e;
+      }
+    },
+    mkdirSync(path, opts) {
+      calls.push({ op: "mkdirSync", path, opts });
+    },
+  };
+}
+
+/** 固定时钟 + 落盘路径的 store（时间基准 T0）。 */
+function persistingStore(fs, opts = {}) {
+  return createHealthStore({ now: () => T0, stateFile: STATE_PATH, fs, ...opts });
+}
+
+test("health 持久化：stateFile 为空 / 空白 → 假 fs 一次都不被调用（纯内存不变）", () => {
+  for (const stateFile of [undefined, "", "   ", null, 42]) {
+    const fs = fakeFs({ text: "{}" });
+    const store = createHealthStore({ failureThreshold: 1, now: () => T0, stateFile, fs });
+
+    assert.deepEqual(store.record("a", false), { dead: true, failures: 1 });
+    assert.equal(store.isDead("a"), true);
+    store.snapshot();
+    store.state("a");
+    store.reset();
+
+    assert.deepEqual(fs.calls, [], `stateFile=${JSON.stringify(stateFile)} 时不该有任何 fs 调用`);
+  }
+});
+
+test("health 持久化：构造时读到既有结论 → isDead 命中、snapshot().dead 正确，且过期的条目被丢掉", () => {
+  const text = JSON.stringify({
+    version: 1,
+    savedAt: T0 - 1_000,
+    entries: {
+      "m-dead": { failures: 3, deadAtMs: T0 - 60_000, lastStatus: 404, lastCode: "model_not_priced" },
+      "m-alive": { failures: 1, deadAtMs: 0, lastStatus: 503, lastCode: "upstream_busy" },
+      // 冷却早已结束（默认 ttl 30 分钟，这条 31 分钟前判死）→ 读进来就该被例行清理掉
+      "m-stale": { failures: 9, deadAtMs: T0 - 31 * 60_000, lastStatus: 404, lastCode: "model_out_of_scope" },
+    },
+  });
+  const fs = fakeFs({ text });
+  const store = persistingStore(fs, { failureThreshold: 3 });
+
+  assert.equal(fs.reads().length, 1, "构造时读一次");
+  assert.equal(fs.reads()[0].path, STATE_PATH);
+  assert.equal(fs.writes().length, 0, "构造阶段绝不写盘");
+
+  assert.equal(store.isDead("m-dead"), true, "上次判死的模型重启后仍认");
+  assert.deepEqual(store.snapshot().dead, ["m-dead"]);
+  assert.equal(store.snapshot().total, 2, "过期条目被清理");
+  assert.deepEqual(store.state("m-dead"), {
+    failures: 3,
+    dead: true,
+    sinceMs: T0 - 60_000,
+    lastStatus: 404,
+    lastCode: "model_not_priced",
+  });
+  assert.equal(store.isDead("m-alive"), false, "只在计数没到阈值的模型不该判死");
+  assert.equal(store.state("m-alive").lastCode, "upstream_busy");
+  assert.deepEqual(store.state("m-stale"), {
+    failures: 0,
+    dead: false,
+    sinceMs: 0,
+    lastStatus: 0,
+    lastCode: "",
+  }, "过期结论按未知处理");
+});
+
+test("health 持久化：坏 JSON / 空对象 / 文件不存在 → 一律当空状态，不抛", () => {
+  const cases = [
+    ["坏 JSON", fakeFs({ text: '{"version":1,"entries":{' })],
+    ["空串", fakeFs({ text: "" })],
+    ["字符串 JSON", fakeFs({ text: '"nope"' })],
+    ["数组 JSON", fakeFs({ text: "[1,2,3]" })],
+    ["entries 是数组", fakeFs({ text: '{"version":1,"entries":[]}' })],
+    ["版本不符", fakeFs({ text: '{"version":99,"savedAt":1,"entries":{"a":{"failures":9,"deadAtMs":1}}}' })],
+    ["文件不存在", fakeFs()],
+  ];
+  for (const [label, fs] of cases) {
+    const store = persistingStore(fs, { failureThreshold: 1 });
+    assert.equal(store.snapshot().total, 0, `${label}：应当是空状态`);
+    assert.deepEqual(store.snapshot().dead, [], `${label}：不该有 dead`);
+    assert.equal(fs.writes().length, 0, `${label}：不该写盘`);
+    // 空状态下 record 仍然正常工作
+    assert.deepEqual(store.record("fresh", false), { dead: true, failures: 1 }, label);
+  }
+});
+
+test("health 持久化：record 真的改变状态才写一次，落盘 JSON 有 version、不含 dead", () => {
+  const fs = fakeFs();
+  const store = persistingStore(fs, { failureThreshold: 2 });
+
+  assert.equal(fs.writes().length, 0, "构造不写盘");
+
+  store.record("m", false, { status: 503, code: "upstream_busy" });
+  assert.equal(fs.writes().length, 1, "第一次失败：状态变了，写一次");
+  store.record("m", false, { status: 404, code: "model_not_priced" });
+  assert.equal(fs.writes().length, 2, "判死：又写一次");
+
+  const last = fs.writes().at(-1);
+  assert.equal(last.path, STATE_PATH);
+  assert.equal(last.enc, "utf8");
+  const written = JSON.parse(last.data);
+  assert.equal(written.version, 1);
+  assert.equal(typeof written.savedAt, "number");
+  assert.deepEqual(Object.keys(written), ["version", "savedAt", "entries"]);
+  assert.deepEqual(Object.keys(written.entries), ["m"]);
+  assert.equal("dead" in written.entries.m, false, "dead 是派生值，不落盘");
+  assert.deepEqual(Object.keys(written.entries.m).sort(), ["deadAtMs", "failures", "lastCode", "lastStatus"]);
+  assert.equal(written.entries.m.failures, 2);
+  assert.equal(written.entries.m.deadAtMs, T0, "首次判死的时刻");
+  assert.equal(written.entries.m.lastStatus, 404);
+  assert.equal(written.entries.m.lastCode, "model_not_priced");
+  assert.deepEqual(fs.mkdirs()[0].opts, { recursive: true }, "写之前补目录");
+
+  // 内容不变 → 不写放大（同样的 ok 记录连打两次，第二次不该产生新写入）
+  store.record("stable", true, { status: 200, code: "ok" });
+  const afterFirst = fs.writes().length;
+  store.record("stable", true, { status: 200, code: "ok" });
+  assert.equal(fs.writes().length, afterFirst, "内容一致不重复写");
+
+  // 非法 id 直接短路，不产生任何写
+  store.record("", false);
+  store.record(null, false);
+  assert.equal(fs.writes().length, afterFirst);
+});
+
+test("health 持久化：写盘抛异常被静默吞掉，record 仍返回正常结果", () => {
+  const fs = fakeFs({ writeThrows: true });
+  const store = persistingStore(fs, { failureThreshold: 1 });
+
+  const r = store.record("m", false, { status: 404, code: "model_not_priced" });
+  assert.deepEqual(r, { dead: true, failures: 1 }, "写失败不能影响返回值");
+  assert.equal(fs.writes().length, 1, "确实尝试过写");
+  assert.equal(store.isDead("m"), true, "内存态仍然生效");
+  assert.deepEqual(store.snapshot().dead, ["m"]);
+  assert.equal(store.record("m2", true).dead, false, "后续调用照常");
+});
+
+test("health 持久化：savedAt 领先当前时刻超过 5 分钟 → 整份忽略（时钟偏移）", () => {
+  const entries = { "m-dead": { failures: 3, deadAtMs: T0 - 60_000, lastStatus: 404, lastCode: "x" } };
+
+  const skewed = fakeFs({ text: JSON.stringify({ version: 1, savedAt: T0 + 5 * 60_000 + 1, entries }) });
+  const ignored = persistingStore(skewed, { failureThreshold: 3 });
+  assert.equal(ignored.snapshot().total, 0, "时钟偏移的文件整份不信");
+  assert.equal(ignored.isDead("m-dead"), false);
+
+  // 边界：正好 5 分钟以内照收
+  const okFs = fakeFs({ text: JSON.stringify({ version: 1, savedAt: T0 + 5 * 60_000, entries }) });
+  const kept = persistingStore(okFs, { failureThreshold: 3 });
+  assert.equal(kept.snapshot().total, 1);
+  assert.equal(kept.isDead("m-dead"), true);
+});
+
+test("health 持久化：reset 也落盘（清空是状态变化），纯内存模式下则一个调用都没有", () => {
+  const fs = fakeFs();
+  const store = persistingStore(fs, { failureThreshold: 1 });
+  store.record("m", false);
+  const before = fs.writes().length;
+
+  store.reset();
+  assert.equal(fs.writes().length, before + 1, "清空要落盘");
+  const written = JSON.parse(fs.writes().at(-1).data);
+  assert.deepEqual(written.entries, {});
+  assert.equal(written.version, 1);
+  assert.deepEqual(store.snapshot().dead, []);
+
+  const memoryOnly = fakeFs();
+  const mem = createHealthStore({ now: () => T0, fs: memoryOnly });
+  mem.record("a", false);
+  mem.reset();
+  assert.deepEqual(memoryOnly.calls, []);
+});
+
+test("healthStatePath：拼出 <dir>/model-health.json，两平台都用 node:path 的 join", () => {
+  assert.equal(healthStatePath("/tmp/x"), join("/tmp/x", "model-health.json"));
+  assert.equal(healthStatePath("/tmp/x").endsWith("model-health.json"), true);
+  assert.equal(healthStatePath("/tmp/x", "custom.json"), join("/tmp/x", "custom.json"));
+  assert.equal(healthStatePath("/tmp/x", ""), join("/tmp/x", "model-health.json"), "空文件名回退默认");
+  assert.equal(healthStatePath("  /tmp/x  "), join("/tmp/x", "model-health.json"), "两端空白被裁掉");
+
+  // 非法入参一律空串：调用方据此当「不持久化」，不会拼出 "undefined/model-health.json"
+  for (const bad of ["", "   ", null, undefined, 42, {}, []]) {
+    assert.equal(healthStatePath(bad), "", String(bad));
+  }
+});
+

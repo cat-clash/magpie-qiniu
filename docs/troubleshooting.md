@@ -274,6 +274,37 @@ node tools/doctor.mjs     # 账号侧：Key 有效性 / 余额 / TPD / options
   `magpie provider test qiniu-ai <model>` 对照一次。本插件不读任何代理相关的 options，
   它跟宿主 / `settings.json` 走。
 
+### 8.5 用 `check --fix` 自动修能修的两类
+
+check 每项问题下面那行 `→ 修复：…` 里，**有两类能直接让工具代跑**，不用手敲：
+
+```powershell
+node tools/check.mjs --fix      # 空跑：只打印将执行的 magpie 命令
+node tools/check.mjs --apply    # 真执行：先备份，再逐条跑完
+```
+
+- **它会做什么**：只干两件事 —— ① provider 被置成 `off` → 跑 `magpie provider on <id>`；
+  ② 同一插件装了多条 spec → 保留 `cat-clash/magpie-qiniu` 那条，其余跑
+  `magpie plugin rm <spec>`。别的检查项它一条都不碰。
+- **`--fix` 是 dry-run**：不写文件、不调 magpie，只把将执行的命令逐条打出来 —— 先看一遍，
+  命令对得上再 `--apply`。
+- **备份在哪**：`--apply` 执行前只备份**计划里真会动到**的文件 —— 有 `plugin rm` 就备份
+  `plugins.json`，有 `provider on` 就备份 `providers.json`，存成
+  `<配置目录>/plugins.json.bak-check-<yyyyMMdd-HHmmss>`（`<配置目录>` 就是 check 头部回显的那个，
+  默认 `~/.config/magpie`）。备份失败就**一条命令都不执行**，退出码 `1`；想反悔把备份覆盖回去。
+- **它不碰的**：账号为空、Key 缺失、仓库文件缺失、Node 版本过低、代理缺失 —— 这五项会列在
+  「以下要人工处理（这次不会动它们）」里，得你自己来（`magpie plugin login qiniu-ai` 重登、
+  补回仓库文件、升级 Node、改 `settings.json` 的 `proxy`）。装重了但判断不出该留哪一条时
+  它也只会提示、不动手。
+  它同样**不重启 magpie**、**不动 `plugin-auth.json`**、不碰账号凭据。
+- **执行过程**：逐条 `spawnSync` 跑 magpie CLI，每条命令的输出原样打屏（带 `[status N]`）；
+  某条失败**不中断**，剩下的照跑完，末尾汇总「成功 N / 失败 M」，有失败时退出码 `1`。
+  出现失败就去手动跑那条命令看完整报错。magpie 可执行文件取 `MAGPIE_BIN`，没设就按 PATH 找。
+  `--json` 和 `--apply` 一起给时只输出计划 JSON、**不执行**。
+- **执行完必须重跑 `node tools/check.mjs` 验证**：`✓` 全通才算改到位；这一步过了还不出字，
+  转 `node tools/doctor.mjs` 查账号侧（见上面 8.1–8.4 与第 2 节）。`--apply` 只保证「改到了」，
+  不保证「改完就好了」。
+
 ## 9. 不知道选哪个模型
 
 别翻 [model-catalog.md](./model-catalog.md) 逐行比价格和上下文了，跑 score：91 个模型按用途打分，
@@ -302,6 +333,9 @@ node tools/score.mjs --exclude <模型id>,<模型id> --profile balanced   # 排�
   在 score 里分数可能仍然很高，但调了必失败。挑之前先看
   `magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth.dead`；等 `ttlMs`（默认 30 分钟）
   过期，或重启宿主进程立即清空。
+- **让 score 自己读快照**：`node tools/score.mjs --profile coding --dead-from <stateDir>/model-health.json`
+  会把快照里判死的模型并进排除列表，不用手抄 `--exclude`。插件设了 option `stateDir` 才会写出
+  这份 `<stateDir>/model-health.json`；不传 `--dead-from` 时 score 行为不变（不排除任何模型）。
 - **catalog 里的 `max_tokens=0` / `context_length=0` 是脏数据**（6 条 / 1 条），不是「零能力」，
   score 已按默认上限兜底；看到这些模型没被排到最后，是故意的。
 
@@ -327,3 +361,48 @@ node tools/score.mjs --exclude <模型id>,<模型id> --profile balanced   # 排�
 4. **已脱敏**日志：安装脚本 `-DryRun` 输出 + 上面那条错误响应体。**不要**贴完整 Key，写成 `Bearer sk-****` 即可。
 
 能自己先验证的两件事：跑一遍离线测试（`node plugin/tests/smoke.mjs`、`node tests/e2e/installer.test.mjs`）确认代码本身没坏；换一个模型 id 确认不是可用性问题。
+
+## 12. 用量数字对不上
+
+先分清是**哪一种**对不上。三类占了绝大多数，口径和确认方法各不相同。
+
+### 12.1 刚打完请求，数字没动（上游延迟 5–15 分钟）
+
+- **现象**：刚跑完一批请求，`magpie quota` 和 `node tools/usage.mjs --days 1` 里的数字没变，
+  过十几分钟再看又对上了。
+- **定位**：`/v3/stat/usage` 的聚合本身有 **5–15 分钟延迟**（费用预估页同样是这个延迟）；插件侧
+  还有一层 `usageCacheMs`（默认 30 秒）。两段叠起来，最长十几分钟看不到新数。
+- **确认**：
+  ```powershell
+  node tools/usage.mjs --days 1     # 直接问上游，绕开插件缓存
+  node tools/doctor.mjs             # 第 4 项「今日 TPD」是同一个口径的已用量
+  ```
+  隔十分钟跑同一条命令，数字变大 = 只是延迟，不是丢数据。
+- **处理**：不用处理。别为了「看起来实时」把 `usageCacheMs` 压到 5000 —— 那只会撞上上游
+  `5 req/s` 限流（见 5 节「用量面板报速率限制 / 数字不刷新」）。
+
+### 12.2 差 1000 倍（kToken 与 token）
+
+- **现象**：面板 / 工具显示 `3.2 万 tokens`，上游原始响应或别处的账单写的是 `32`。
+- **定位**：上游 `/v3/stat/usage` 的单位是 **kToken**，插件与 `tools/usage.mjs` 都 **×1000**
+  换成 token 再显示。看到 `32` 就是 32 kToken = 3.2 万 token，不是少了一千倍的数据。
+- **确认**：
+  ```powershell
+  node tools/usage.mjs --days 1 --json    # 输出里的 token 数已经是 ×1000 之后的值
+  ```
+- **处理**：不是 bug，别自己再乘一遍。对表时把上游原始值 ×1000 再比。
+
+### 12.3 「今天」的量和本地零点之后的对不上（按账号日界，+08 零点重置）
+
+- **现象**：`--days 1` 或「今日 TPD」窗口的数字，和本机 0 点以后实际打的对不上；本机时区不是
+  UTC+8 时尤其明显。
+- **定位**：TPD 窗口与 `--days 1` 的序列都按 **+08 零点**切日（上游日界），跟本机时区、也跟
+  财务中心的账期不同。另外 TPD 是**按账号**算的 —— 多把 Key 登录同一个账号时用量合在一起，
+  单看一把 Key 当然对不上。
+- **确认**：
+  ```powershell
+  node tools/usage.mjs --days 1 --granularity hour   # 看小时分布，确认跨零点的落点
+  node tools/doctor.mjs                              # 第 1/2/4 项：是哪个账号、今日已用多少
+  ```
+- **处理**：按 +08 对齐后再比；多 Key 同账号时把各 Key 加起来比。撞 429 TPD 只能等下一个
+  +08 零点（**换 Key 无效**），见 5 节「想查『今天还剩多少 TPD』」。

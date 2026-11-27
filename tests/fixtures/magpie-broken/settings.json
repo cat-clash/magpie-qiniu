@@ -1,0 +1,4 @@
+{
+  "_fixture": "坏配置，仅供 CI 里跑 tools/check.mjs 用：proxy = direct（海外端点走不通）",
+  "proxy": "direct"
+}

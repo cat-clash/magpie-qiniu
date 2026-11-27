@@ -1,0 +1,6 @@
+{
+  "_fixture": "坏配置，仅供 CI 里跑 tools/check.mjs 用：provider 被置了 off:true（请求 404）",
+  "providers": [
+    { "id": "qiniu-ai", "off": true }
+  ]
+}

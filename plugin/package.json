@@ -1,6 +1,6 @@
 {
   "name": "magpie-qiniu-lite",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "七牛云 AI 大模型推理（api.qnaigc.com）的 Magpie 插件：sk- 密钥直连、91 个模型、真实积分余额与用量窗口",
   "type": "module",
   "main": "./index.mjs",

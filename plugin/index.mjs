@@ -41,7 +41,7 @@ import {
 import { qiniuAuthHeader } from "./src/sign.mjs";
 import { createPacing } from "./src/pacing.mjs";
 import { createBreaker } from "./src/breaker.mjs";
-import { createHealthStore } from "./src/health.mjs";
+import { createHealthStore, healthStatePath } from "./src/health.mjs";
 import { accountLabel } from "./src/account-name.mjs";
 import { PORTAL_URL, REQUEST_LOG_CAP } from "./src/config.mjs";
 
@@ -223,8 +223,9 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
   // 出站两道本地闸，都按账号分桶：节奏（预防 TPM/RPM）+ 熔断（TPD/欠费止损）
   const pacing = createPacing({ minMs: opts.pacingMinMs, jitterMs: opts.pacingJitterMs });
   const breaker = createBreaker({ threshold: opts.breakerThreshold, cooldownMs: opts.breakerCooldownMs });
-  // 模型健康快照：连续「模型级」失败（404 未标价 / 不在订阅组）就标 dead，models 钩子把它藏起来
-  const health = createHealthStore();
+  // 模型健康快照：连续「模型级」失败（404 未标价 / 不在订阅组）就标 dead，models 钩子把它藏起来。
+  // stateDir 为空（默认）→ stateFile 为空 → 纯内存零 IO；设了才落盘，供 `tools/score.mjs --dead-from` 读。
+  const health = createHealthStore({ stateFile: healthStatePath(opts.stateDir) });
 
   const config = async (cfg) => {
     if (!cfg || typeof cfg !== "object") return;

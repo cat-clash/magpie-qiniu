@@ -1,0 +1,7 @@
+{
+  "_fixture": "假配置，仅供 CI 里跑 tools/check.mjs 用；key 是明显的假值 sk-FIXTURE-...，绝对不是真 Key",
+  "qiniu-ai": {
+    "type": "api",
+    "key": "sk-FIXTURE-0123456789abcdef"
+  }
+}

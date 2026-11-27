@@ -31,6 +31,26 @@ jobs:
       - name: 插件单元测试
         run: node --test plugin/tests/*.test.mjs
 
+      # 宿主侧体检的「工具链自检」：CI 机器上没有 magpie、也没有 ~/.config/magpie，
+      # 所以用 tests/fixtures/ 下的两套假配置喂给 check（check 本身零网络、不碰真配置）。
+      # MAGPIE_BIN 指 /bin/true：CI 里没有 magpie 二进制，若不指桩，check 会稳定报
+      # magpie-binary=warn，而 summarize 把 warn 也算「非 ok」，ok fixture 的退出码会变成 1。
+      - name: 宿主侧体检 check（坏 fixture 必须报错）
+        env:
+          MAGPIE_BIN: /bin/true
+        run: |
+          set +e
+          node tools/check.mjs --config-dir tests/fixtures/magpie-broken --json > /tmp/check-broken.json
+          broken=$?
+          node tools/check.mjs --config-dir tests/fixtures/magpie-ok --json > /tmp/check-ok.json
+          ok=$?
+          set -e
+          echo "broken exit=$broken (期望 1)  ok exit=$ok (期望 0)"
+          test "$broken" = "1"
+          test "$ok" = "0"
+      - name: 契约漂移检测（必须零差集）
+        run: node scripts/contract-diff.mjs
+
       - name: 安装器端到端测试
         run: node --test tests/e2e/installer.test.mjs
 

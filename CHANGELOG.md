@@ -3,6 +3,53 @@
 本插件遵循语义化版本。`plugin/package.json` 的 `version` 决定 magpie 是否重新加载插件
 （改完代码不 bump 会命中宿主缓存，GUI 里看不到变化）。
 
+## 1.4.0 — 2026-11-27
+
+### 新增
+
+- **`check --fix` / `--apply`（`tools/check.mjs`）**：7 项宿主侧检查里挑出**两类能自动修**的 ——
+  `provider off:true` → `magpie provider on <id>`；同一插件装了多条 spec → 保留
+  `cat-clash/magpie-qiniu` 那条、其余 `magpie plugin rm <spec>`。`--fix` 是 **dry-run**
+  （只打印将执行的命令，一个字节都不写），`--apply` 才真跑：先按计划备份会动到的
+  `plugins.json` / `providers.json`（`*.bak-check-<yyyyMMdd-HHmmss>`，备份失败就一条命令都不执行），
+  再逐条 `spawnSync` 跑 magpie CLI 并原样打印
+  每条命令的输出，某条失败**不中断**，跑完汇总「成功 N / 失败 M」。账号为空、Key 缺失、
+  仓库文件缺失、Node 版本过低、代理缺失**不自动修**（要人工处理）。magpie 取
+  `process.env.MAGPIE_BIN || "magpie"`；不重启 magpie，不碰 `plugin-auth.json`。
+- **模型健康快照落盘（`plugin/src/health.mjs`）**：`createHealthStore` 增可选 `stateFile` ——
+  默认空 = 纯内存、零 IO；设了才在每次状态变化时写
+  `{ version:1, savedAt, entries:{ [modelId]:{ failures, deadAtMs, lastStatus, lastCode } } }`
+  （`dead` 是派生值，不落盘）。写失败静默；读到 `savedAt` 比当前时间超前 5 分钟以上的快照
+  整份忽略。插件侧路径是 `<stateDir>/model-health.json`（`stateDir` 是已有 option，默认空）。
+- **`score --dead-from <file>`（`tools/score.mjs`）**：把健康快照文件里判死的模型并进排除列表，
+  不用再手抄 `--exclude`；不给这个参数时行为不变；文件读不到 / 坏 JSON 打一行 `ℹ` 继续；
+  `--json` 增 `excludedBy: "flag" | "dead-file" | "none"`。
+- **用量看板 `node tools/usage.mjs`**：把 `/v3/stat/usage` 的序列摊成「按天」（日期 / 输入 /
+  输出 / 合计）与「按模型」（模型 / 合计 / 占比）两张表，末尾一行
+  「近 7 天 X tokens · 花费 ¥Y · 日均 Z」。参数：`--days <1..31>`（默认 7）、
+  `--granularity day|hour`（默认 day）、`--cost`、`--json`、`--auth <path>`、`--provider <id>`。
+  上游单位是 kToken，工具内部 ×1000 换成 token。退出码 `0` 成功 / `1` 上游失败（打印脱敏后的
+  原文 + 可操作提示）/ `2` 用法错误。
+
+### 变更
+
+- README「诊断与自带工具」新增 `usage` 子节；`check` 补 `--fix` / `--apply` 的安全模型
+  （dry-run 默认、备份文件名、只修两类、其余人工）；`score` 补 `--dead-from` 用法与
+  「插件设了 `stateDir` 后会写出 `<stateDir>/model-health.json`」；排错表新增
+  「想确认这几个工具的组合用法」一行（`check` → `doctor` → `usage`，顺序不能反）。
+- `docs/troubleshooting.md` 增 §8.5（用 `check --fix` 自动修能修的两类）与 §12「用量数字对不上」。
+- README「插件配置」表里 `stateDir` 一行从「状态目录（当前仅保留）」改成真实行为
+  （设了就落 `<stateDir>/model-health.json`，空 = 纯内存零 IO）—— 这轮之前它确实是占位。
+- CI 增两步：用 `tests/fixtures/magpie-broken` 与 `tests/fixtures/magpie-ok` 两套假配置跑
+  `node tools/check.mjs --config-dir … --json`，断言退出码分别是 `1` 与 `0`；再跑
+  `node scripts/contract-diff.mjs` 断言零差集（exit 0）。
+
+### 测试
+
+- 新增 usage-report（17）/ fixtures（12）两个测试文件，check 由 24 增到 32、health 由 13 增到 21、
+  score 由 16 增到 19；全量 337 → **385** 例，Node 22 与 Node 24 双跑全绿，e2e 23/23，
+  smoke ok（1.4.0），contract-diff exit 0。
+
 ## 1.3.0 — 2026-11-27
 
 ### 新增

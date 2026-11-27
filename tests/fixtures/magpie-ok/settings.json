@@ -1,0 +1,4 @@
+{
+  "_fixture": "假配置，仅供 CI 里跑 tools/check.mjs 用；不是任何人本机的真实 settings.json",
+  "proxy": "http://127.0.0.1:7897"
+}

@@ -1,0 +1,6 @@
+{
+  "_fixture": "坏配置，仅供 CI 里跑 tools/check.mjs 用：账号只有 type、没有 key（AK/SK 没签发 sk- Key）",
+  "qiniu-ai": {
+    "type": "api"
+  }
+}

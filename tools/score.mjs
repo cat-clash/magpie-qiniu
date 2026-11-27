@@ -7,13 +7,16 @@
 //   node tools/score.mjs --profile cheap --all  # 省钱的完整排序
 //   node tools/score.mjs --profile vision --json
 //   node tools/score.mjs --exclude a,b,c        # 手动排除（例如已知 503 的模型）
+//   node tools/score.mjs --dead-from ~/.cache/magpie/model-health.json   # 按插件落盘的 dead 结论排除
 //
-// 关于健康态：health.mjs 的 dead 结论活在宿主进程内存里（`~/.config/magpie` 落不了盘，也没这个文件
-// 的约定），CLI 读不到，所以**默认不排除任何模型**。要按实测结果剔掉几条，用 --exclude 手动传。
+// 关于健康态：health.mjs 的 dead 结论默认只活在宿主进程内存里，CLI 读不到 —— 所以**默认不排除任何
+// 模型**。两条路可以按实测结果剔掉几条：--exclude 手动传，或 --dead-from 指向插件写出的
+// `<stateDir>/model-health.json`（插件在集成方给了 stateDir 时才会写这个文件）。
 // --include-dead 因此是个显式的空操作（语义：我不排除任何东西），留着是为了脚本里能对称地写。
 //
-// 退出码：0 成功 / 2 未知 profile 或用法错误。
+// 退出码：0 成功 / 2 未知 profile 或用法错误。--dead-from 读不到只提示、不改退出码。
 
+import { readFileSync } from "node:fs";
 import { CATALOG, DEFAULT_LIMITS as CATALOG_LIMITS, UPSTREAM_FACTS } from "../plugin/src/catalog.mjs";
 import {
   DEFAULT_LIMITS,
@@ -59,6 +62,9 @@ const USAGE = `模型评分与推荐 · 七牛 AI 推理（${UPSTREAM_FACTS.TOTA
   --all              列出全部模型
   --json             机器可读输出（含各维度分与兜底留痕）
   --exclude a,b,c    手动排除模型 id（默认不排除任何模型，见文件头「关于健康态」）
+  --dead-from <file> 读插件写出的健康态文件，把里面判死的模型并入排除
+                     （文件由插件在设置了 stateDir 后写出，路径 <stateDir>/model-health.json；
+                      读不到 / 坏 JSON 只提示一行，按未排除处理，退出码仍是 0）
   --include-dead     显式声明「不排除任何模型」（空操作，默认即是）
   --help, -h         显示本帮助
 
@@ -81,7 +87,7 @@ function argValue(flag) {
 
 function fail(msg) {
   process.stderr.write(`score: ${msg}\n`);
-  process.stderr.write(`用法：node tools/score.mjs [--profile ${PROFILES.join("|")}] [--limit n] [--all] [--json] [--exclude a,b] [--help]\n`);
+  process.stderr.write(`用法：node tools/score.mjs [--profile ${PROFILES.join("|")}] [--limit n] [--all] [--json] [--exclude a,b] [--dead-from file] [--help]\n`);
   process.exit(2);
 }
 
@@ -91,7 +97,17 @@ if (argv.includes("--help") || argv.includes("-h")) {
 }
 
 // 未知参数一律 2：宁可报错，也不要让人以为筛选条件生效了。
-const KNOWN = new Set(["--profile", "--limit", "--json", "--all", "--exclude", "--include-dead", "--help", "-h"]);
+const KNOWN = new Set([
+  "--profile",
+  "--limit",
+  "--json",
+  "--all",
+  "--exclude",
+  "--dead-from",
+  "--include-dead",
+  "--help",
+  "-h",
+]);
 for (const a of argv) {
   if (a.startsWith("--") && !KNOWN.has(a)) fail(`不认识的参数 ${a}`);
 }
@@ -113,10 +129,87 @@ if (argValue("--limit") !== undefined) {
 }
 if (wantAll) limit = CATALOG.length;
 
-const exclude = (argValue("--exclude") || "")
+// --exclude：用户手写的那一份（JSON 里的 excludedUnknown 只看这一份，避免把状态文件里的历史 id 当噪音）。
+const flagExclude = (argValue("--exclude") || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+/**
+ * 从健康态文件里抽出「判死」的模型 id。两种形状都认：
+ *   1) 插件落盘形状 { version: 1, savedAt, entries: { [id]: { failures, deadAtMs, lastStatus, lastCode } } }
+ *   2) 简化形状     { dead: ["id-a", "id-b"] }（也顺手认裸数组）
+ * TTL 由插件侧自己清理，CLI 只做「文件里写着 dead 就排除」，不猜时效。
+ *
+ * @param {unknown} parsed JSON.parse 的结果
+ * @returns {string[]} 判死的模型 id（去重、保序）
+ */
+function deadIdsFrom(parsed) {
+  const out = new Set();
+  const push = (v) => {
+    if (typeof v !== "string") return;
+    const id = v.trim();
+    if (id) out.add(id);
+  };
+
+  if (Array.isArray(parsed)) {
+    for (const v of parsed) push(v);
+    return [...out];
+  }
+  if (!parsed || typeof parsed !== "object") return [];
+
+  if (Array.isArray(parsed.dead)) for (const v of parsed.dead) push(v);
+
+  const entries = parsed.entries;
+  if (entries && typeof entries === "object" && !Array.isArray(entries)) {
+    for (const [id, e] of Object.entries(entries)) {
+      if (!e || typeof e !== "object") continue;
+      const deadAtMs = Number(e.deadAtMs);
+      if ((Number.isFinite(deadAtMs) && deadAtMs > 0) || e.dead === true) push(id);
+    }
+  }
+  return [...out];
+}
+
+const deadFrom = argValue("--dead-from");
+let deadFromUsed = false;
+let deadExclude = [];
+
+// 提示走哪个流：--json 时绝不能污染 stdout（那是给脚本 JSON.parse 的），改走 stderr。
+const notice = (msg) => (wantJson ? process.stderr : process.stdout).write(`${msg}\n`);
+
+if (deadFrom !== undefined) {
+  // 空值（`--dead-from` 后面没跟路径）当读不到处理，不报错退出。
+  if (!deadFrom) {
+    notice("ℹ 读不到 ，按未排除处理");
+  } else {
+    let text;
+    let ok = false;
+    try {
+      text = readFileSync(deadFrom, "utf8");
+      ok = true;
+    } catch {
+      ok = false;
+    }
+    if (ok) {
+      try {
+        // 手写/被 Windows 编辑器存过 BOM 的文件也要认：先剥 BOM 再 parse。
+        const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+        deadExclude = deadIdsFrom(JSON.parse(body));
+        deadFromUsed = true;
+      } catch {
+        ok = false;
+      }
+    }
+    if (!ok) notice(`ℹ 读不到 ${deadFrom}，按未排除处理`);
+  }
+}
+
+// 合并去重（用户显式写的在前，状态文件的在后）；--dead-from 不给时 deadExclude 为空，行为与旧版一致。
+const exclude = [...new Set([...flagExclude, ...deadExclude])];
+
+// --exclude 优先于 --dead-from：用户手写的意图更明确。
+const excludedBy = flagExclude.length ? "flag" : deadExclude.length ? "dead-file" : "none";
 
 // 兜底口径自检：两处 DEFAULT_LIMITS 必须一致，否则分数不可复现。
 if (DEFAULT_LIMITS.context !== CATALOG_LIMITS.context || DEFAULT_LIMITS.output !== CATALOG_LIMITS.output) {
@@ -124,7 +217,8 @@ if (DEFAULT_LIMITS.context !== CATALOG_LIMITS.context || DEFAULT_LIMITS.output !
 }
 
 const rows = rankModels(CATALOG, { profile, limit, exclude });
-const excludedUnknown = exclude.filter((id) => !CATALOG.some((m) => m.id === id));
+// 只对 --exclude 手写的 id 报「不在目录中」；状态文件里的历史 id 不算用户笔误。
+const excludedUnknown = flagExclude.filter((id) => !CATALOG.some((m) => m.id === id));
 
 if (wantJson) {
   process.stdout.write(
@@ -136,6 +230,8 @@ if (wantJson) {
         total: CATALOG.length,
         excluded: exclude,
         excludedUnknown,
+        excludedBy,
+        deadFrom: deadFromUsed ? deadFrom : null,
         returned: rows.length,
         rows,
       },
@@ -154,6 +250,13 @@ out.push(
     `price ${PROFILE_WEIGHTS[profile].price} / capability ${PROFILE_WEIGHTS[profile].capability}` +
     `　·　目录 ${CATALOG.length} 条${exclude.length ? `，排除 ${exclude.length} 条` : "，未排除任何模型"}`,
 );
+// --dead-from 生效时把「排除了谁、来自哪」写清楚，避免排序结果无法对账。
+if (deadFromUsed) {
+  out.push(
+    `ℹ --dead-from ${deadFrom}：排除 ${deadExclude.length} 个已判死模型` +
+      `${deadExclude.length ? `（${deadExclude.slice(0, 6).join(", ")}${deadExclude.length > 6 ? " …" : ""}）` : ""}`,
+  );
+}
 out.push("");
 
 const nw = Math.min(44, Math.max(10, ...rows.map((r) => width(r.id))));

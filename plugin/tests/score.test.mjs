@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CATALOG, DEFAULT_LIMITS as CATALOG_LIMITS, FREE_IDS, UPSTREAM_FACTS, VISION_IDS } from "../src/catalog.mjs";
 import {
   CAPS,
@@ -260,3 +265,121 @@ test("真实目录：上游 0 值已换成兜底值并留了 note 标记，原�
     assert.ok(scoreModel(m).parts.context > 0, `${m.id} 的 context 分不应为 0`);
   }
 });
+
+// ── tools/score.mjs 的 --dead-from ───────────────────────────────────────────
+// 这几条用例真的会在临时目录里写一个 JSON，跑完删掉（不碰 ~/.config，不碰仓库目录）。
+
+const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const SCORE_CLI = join(REPO_ROOT, "tools", "score.mjs");
+
+/** 临时目录里写一份健康态文件；返回 { file, cleanup }。 */
+function tempStateFile(text) {
+  const dir = mkdtempSync(join(tmpdir(), "magpie-score-"));
+  const file = join(dir, "model-health.json");
+  writeFileSync(file, text, "utf8");
+  return { dir, file, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** 跑一遍 CLI，返回 { status, stdout, stderr }。 */
+function runScore(args) {
+  const r = spawnSync(process.execPath, [SCORE_CLI, ...args], { encoding: "utf8", timeout: 60_000 });
+  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", error: r.error };
+}
+
+const DEAD_A = "moonshotai/kimi-k3.1-pro";
+const DEAD_B = "moonshotai/kimi-k3.1-pro-highspeed";
+
+test("--dead-from：{ dead: [...] } 形状里两个模型被排除，排序里不再出现", () => {
+  const tmp = tempStateFile(JSON.stringify({ dead: [DEAD_A, DEAD_B] }));
+  try {
+    const r = runScore(["--dead-from", tmp.file, "--json", "--all"]);
+    assert.equal(r.error, undefined, `CLI 起不来：${r.error && r.error.message}`);
+    assert.equal(r.status, 0, `退出码必须 0：${r.stderr}`);
+
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.excludedBy, "dead-file");
+    assert.equal(out.deadFrom, tmp.file);
+    assert.deepEqual([...out.excluded].sort(), [DEAD_A, DEAD_B].sort());
+    assert.deepEqual(out.excludedUnknown, [], "状态文件里的 id 不算用户笔误");
+    assert.equal(out.rows.length, out.total - 2, "排除两条后应剩 total-2 条");
+    assert.equal(out.rows.some((x) => x.id === DEAD_A), false);
+    assert.equal(out.rows.some((x) => x.id === DEAD_B), false);
+
+    // 文本模式的头部也要能看出排除了几条
+    const text = runScore(["--dead-from", tmp.file, "--limit", "3"]);
+    assert.equal(text.status, 0);
+    assert.match(text.stdout, /排除 2 条/);
+    assert.match(text.stdout, /--dead-from/);
+  } finally {
+    tmp.cleanup();
+  }
+});
+
+test("--dead-from：坏 JSON / 文件不存在 → 一个都不排除，仍退出 0 并打一行提示", () => {
+  for (const [label, text] of [
+    ["坏 JSON", "{ 这不是 JSON"],
+    ["空文件", ""],
+    ["被截断", '{"version":1,"entries":{"a":'],
+  ]) {
+    const tmp = tempStateFile(text);
+    try {
+      const r = runScore(["--dead-from", tmp.file, "--json"]);
+      assert.equal(r.status, 0, `${label}：退出码必须 0`);
+      assert.match(r.stderr, /读不到/, `${label}：--json 时提示走 stderr，不能污染 stdout`);
+      const out = JSON.parse(r.stdout);
+      assert.deepEqual(out.excluded, [], `${label}：不该排除任何模型`);
+      assert.deepEqual(out.excludedUnknown, []);
+      assert.equal(out.excludedBy, "none", label);
+      assert.equal(out.deadFrom, null, label);
+      assert.equal(out.rows.length, out.limit, `${label}：行数应等于 limit`);
+
+      const text2 = runScore(["--dead-from", tmp.file, "--limit", "2"]);
+      assert.equal(text2.status, 0, label);
+      assert.match(text2.stdout, /读不到/, `${label}：文本模式要有一行提示`);
+    } finally {
+      tmp.cleanup();
+    }
+  }
+
+  // 文件确实不存在时同样如此
+  const r = runScore(["--dead-from", join(tmpdir(), "magpie-score-does-not-exist-9f3a.json"), "--json"]);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out.excluded, []);
+  assert.equal(out.excludedBy, "none");
+});
+
+test("--dead-from：插件落盘形状 { version:1, entries:{...} } 也能抽出 dead 列表", () => {
+  const t = Date.now();
+  const tmp = tempStateFile(
+    JSON.stringify({
+      version: 1,
+      savedAt: t,
+      entries: {
+        [DEAD_A]: { failures: 3, deadAtMs: t - 60_000, lastStatus: 404, lastCode: "model_not_priced" },
+        [DEAD_B]: { failures: 5, deadAtMs: t - 30_000, lastStatus: 503, lastCode: "upstream_busy" },
+        // 只有失败计数、还没判死（deadAtMs=0）的不能排除
+        "z-ai/glm-4.5-air-free": { failures: 1, deadAtMs: 0, lastStatus: 503, lastCode: "upstream_busy" },
+      },
+    }),
+  );
+  try {
+    const r = runScore(["--dead-from", tmp.file, "--json", "--all"]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.excludedBy, "dead-file");
+    assert.deepEqual([...out.excluded].sort(), [DEAD_A, DEAD_B].sort(), "只抽 deadAtMs>0 的");
+    assert.equal(out.rows.some((x) => x.id === "z-ai/glm-4.5-air-free"), true, "没判死的不排除");
+
+    // 和 --exclude 合并时，用户显式的 flag 优先记在 excludedBy 上
+    const both = runScore(["--dead-from", tmp.file, "--exclude", "z-ai/glm-4.5-air-free", "--json", "--all"]);
+    assert.equal(both.status, 0, both.stderr);
+    const merged = JSON.parse(both.stdout);
+    assert.equal(merged.excludedBy, "flag");
+    assert.deepEqual([...merged.excluded].sort(), ["z-ai/glm-4.5-air-free", DEAD_A, DEAD_B].sort());
+    assert.equal(merged.rows.length, merged.total - 3);
+  } finally {
+    tmp.cleanup();
+  }
+});
+

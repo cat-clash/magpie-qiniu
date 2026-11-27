@@ -1,6 +1,7 @@
 // plugin/tests/check.test.mjs — 宿主侧体检判定层的单测（node:test，不联网、不读真实配置）。
 // 覆盖：Node 版本 / 仓库完整性 / 插件安装 / provider 开关 / 账号 / 代理 / magpie 二进制 /
-//      summarize 的 bad>warn>ok 优先级 / renderChecks 的符号与 --json 模式 / makeCheck 默认值。
+//      summarize 的 bad>warn>ok 优先级 / renderChecks 的符号与 --json 模式 / makeCheck 默认值 /
+//      planRepair 的自愈计划（provider on、多余的 plugin rm、判断不出就不动）与人工项。
 // 跑法：node --test plugin/tests/check.test.mjs
 
 import { test } from "node:test";
@@ -14,8 +15,12 @@ import {
   checkProviderSwitched,
   checkProxy,
   checkRepoFiles,
+  describeManual,
+  describeRepair,
+  isEmptyRepair,
   makeCheck,
   maskProxy,
+  planRepair,
   renderChecks,
   summarize,
 } from "../src/check.mjs";
@@ -248,4 +253,148 @@ test("renderChecks：color 模式带 ANSI，纯文本模式不带", () => {
   assert.match(renderChecks(result, { color: true })[0], /\x1b\[31m✗\x1b\[0m/);
   assert.doesNotMatch(renderChecks(result)[0], /\x1b\[/);
   assert.deepEqual(renderChecks({ checks: [] }), []);
+});
+
+// ── planRepair / describeRepair / isEmptyRepair（--fix / --apply 的计划层） ──────
+
+/** 全绿现场：7 条检查全是 ok/info。 */
+function allGreenChecks() {
+  return [
+    checkNode("22.14.0"),
+    checkRepoFiles(ALL_FILES),
+    checkPluginInstalled({ plugins: [{ spec: "github:cat-clash/magpie-qiniu" }] }),
+    checkProviderSwitched({ providers: [{ id: "qiniu-ai" }] }),
+    checkAccounts({ "qiniu-ai": { key: "sk-verysecret123456" } }),
+    checkProxy({ proxy: "http://127.0.0.1:7897" }),
+    checkMagpieBinary("D:\\magpie\\magpie.com"),
+  ];
+}
+
+test("planRepair：provider 被置 off → 恰好一条 provider-on，args 正确", () => {
+  const checks = [checkProviderSwitched({ providers: [{ id: "qiniu-ai", off: true }] })];
+  const plan = planRepair({ checks });
+  assert.equal(plan.empty, false);
+  assert.equal(isEmptyRepair(plan), false);
+  assert.equal(plan.actions.length, 1);
+  const a = plan.actions[0];
+  assert.equal(a.kind, "provider-on");
+  assert.equal(a.command, "magpie");
+  assert.deepEqual(a.args, ["provider", "on", "qiniu-ai"]);
+  assert.match(a.why, /off/);
+  assert.equal(plan.manual.length, 0);
+});
+
+test("planRepair：重复 spec → 保留 cat-clash 那条，另一条生成 plugin-rm", () => {
+  const dup = checkPluginInstalled({
+    plugins: [{ spec: "github:tk103331/magpie-qiniu-plugin" }, { spec: "github:cat-clash/magpie-qiniu" }],
+  });
+  assert.equal(dup.level, "warn");
+  const plan = planRepair({ checks: [dup] });
+  assert.equal(plan.actions.length, 1);
+  const a = plan.actions[0];
+  assert.equal(a.kind, "plugin-rm");
+  assert.deepEqual(a.args, ["plugin", "rm", "github:tk103331/magpie-qiniu-plugin"]);
+  // 官方那条绝不能被移除
+  assert.ok(!plan.actions.some((x) => x.args.includes("github:cat-clash/magpie-qiniu")));
+});
+
+test("planRepair：判断不出保留谁时不产生任何 rm 动作", () => {
+  // 两条都含 cat-clash/magpie-qiniu（一个带 tag）→ 分不清真身，宁可不动
+  const twoOfficial = checkPluginInstalled({
+    plugins: [{ spec: "github:cat-clash/magpie-qiniu@1.2.3" }, { spec: "github:cat-clash/magpie-qiniu" }],
+  });
+  const p1 = planRepair({ checks: [twoOfficial] });
+  assert.deepEqual(p1.actions, []);
+  assert.equal(p1.empty, true);
+  assert.equal(p1.manual.length, 1);
+  assert.match(p1.manual[0], /判断不出/);
+
+  // detail 解析不出 spec 列表（外部手搓的 check）→ 同样不动
+  const opaque = makeCheck({ id: "plugin-installed", level: "warn", label: "插件安装", detail: "装重了" });
+  assert.deepEqual(planRepair({ checks: [opaque] }).actions, []);
+});
+
+test("planRepair：全绿现场 → empty 为 true，没有动作也没有人工项", () => {
+  const plan = planRepair({ checks: allGreenChecks() });
+  assert.equal(plan.empty, true);
+  assert.equal(isEmptyRepair(plan), true);
+  assert.deepEqual(plan.actions, []);
+  assert.deepEqual(plan.manual, []);
+  assert.deepEqual(describeRepair(plan), []);
+  assert.deepEqual(describeManual(plan), []);
+});
+
+test("describeRepair：每类动作都有可读文案且含完整命令", () => {
+  const checks = [
+    checkPluginInstalled({
+      plugins: [{ spec: "github:tk103331/magpie-qiniu-plugin" }, { spec: "github:cat-clash/magpie-qiniu" }],
+    }),
+    checkProviderSwitched({ providers: [{ id: "qiniu-ai", off: true }] }),
+  ];
+  const plan = planRepair({ checks });
+  assert.equal(plan.actions.length, 2);
+  const lines = describeRepair(plan);
+  assert.equal(lines.length, 2);
+  for (const line of lines) assert.match(line, /magpie /);
+  assert.ok(lines.some((l) => l.includes("magpie provider on qiniu-ai")));
+  assert.ok(lines.some((l) => l.includes("magpie plugin rm github:tk103331/magpie-qiniu-plugin")));
+  // plugin-rm 一定排在 provider-on 前面（rm 可能把 provider 置 off，on 要放最后）
+  assert.ok(lines[0].includes("plugin rm"));
+  assert.ok(lines[1].includes("provider on"));
+  // 未知 kind（手搓 plan）也不抛，退化成 why + 命令
+  assert.deepEqual(describeRepair({ actions: null }), []);
+  assert.equal(describeRepair(undefined).length, 0);
+});
+
+test("planRepair：账号为空 / Key 缺失 / 仓库缺失都不产生任何 action（只进人工项）", () => {
+  const checks = [
+    checkAccounts({ "some-other": { key: "sk-verysecret123456" } }),
+    checkAccounts({ "qiniu-ai": { metadata: { mode: "aksk" } } }),
+    checkRepoFiles(ALL_FILES.filter((f) => f !== "plugin/src/config.mjs")),
+    checkNode("20.11.1"),
+    checkProxy({ proxy: "direct" }),
+  ];
+  const plan = planRepair({ checks });
+  assert.deepEqual(plan.actions, []);
+  assert.equal(plan.empty, true);
+  assert.equal(isEmptyRepair(plan), true);
+  assert.equal(plan.manual.length, 5);
+  assert.ok(plan.manual.every((l) => /要人工处理/.test(l)));
+  assert.ok(plan.manual.some((l) => l.includes("账号")));
+  assert.ok(plan.manual.some((l) => l.includes("仓库完整性")));
+  // 人工项里绝不夹带 Key 原文
+  assert.doesNotMatch(JSON.stringify(plan), /verysecret/);
+});
+
+test("planRepair：checks 为空数组 / undefined / 怪形状都不抛，且判为空计划", () => {
+  for (const input of [undefined, {}, { checks: undefined }, { checks: null }, { checks: [] }, { checks: [null, 1, "x"] }]) {
+    const plan = planRepair(input);
+    assert.equal(plan.empty, true);
+    assert.deepEqual(plan.actions, []);
+    assert.deepEqual(plan.manual, []);
+    assert.equal(isEmptyRepair(plan), true);
+  }
+  assert.deepEqual(describeRepair(null), []);
+  assert.equal(isEmptyRepair(undefined), true);
+});
+
+test("renderChecks：输出与自愈计划无耦合（旧 7 项格式一个字都没变）", () => {
+  const checks = [
+    checkNode("22.14.0"),
+    checkProviderSwitched({ providers: [{ id: "qiniu-ai", off: true }] }),
+  ];
+  const result = summarize(checks);
+  const lines = renderChecks(result);
+  assert.deepEqual(lines, [
+    "✓ Node 版本：v22.14.0 ≥ 22",
+    "✗ provider 开关：qiniu-ai 是 off:true（模型选不到它，请求直接 404）",
+    "  → 修复：magpie provider on qiniu-ai 打开；plugin off/on 之后要重新开一次",
+  ]);
+  // 先有计划、再渲染，渲染结果必须一模一样（计划层不改 checks，也不往里塞字段）
+  const before = JSON.stringify(lines);
+  planRepair({ checks });
+  assert.equal(JSON.stringify(renderChecks(result)), before);
+  assert.deepEqual(Object.keys(checks[1]).sort(), ["detail", "hint", "id", "label", "level"]);
+  // --json 也只有一个对象，不夹带 repair 字段（那是 CLI 自己加的）
+  assert.equal(JSON.parse(renderChecks(result, { json: true })[0]).repair, undefined);
 });

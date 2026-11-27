@@ -1,0 +1,6 @@
+{
+  "_fixture": "假配置，仅供 CI 里跑 tools/check.mjs 用；不是任何人本机的真实 plugins.json",
+  "plugins": [
+    { "spec": "github:cat-clash/magpie-qiniu", "options": {} }
+  ]
+}
