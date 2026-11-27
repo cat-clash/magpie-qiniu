@@ -37,6 +37,8 @@
   - `service_status` 已知值 `available`；其余取值待 A1 确认（未知值一律 `status:"deprecated"` 隐藏）。
 - 常见错误文案（用于分档，来自 A2/A3 文档摘录）：402 余额/资源包不足；403 `Request not allowed`（欠费）/`Account is suspended due to billing status`（实测，账号停用）/`apikey monthly quota exceeded`/`model … is not available in your assigned model groups`；503 `the price of the model is not set`；429 `UID rate limit reached for TPD (oversea|domestic) for UID`/RPM/TPM。
 - `/v3/stat/usage` 限流：同 IP 5 req/s；`granularity=day` 跨度 ≤31 天，`hour` ≤7 天；`timezone` 需 IANA 名（默认 `Asia/Shanghai`）。
+- `/v3/stat/usage` 的时间参数是 **`start` / `end`**（RFC3399 带偏移）。**实测 2026-11-27**：文档口径的 `from`/`to` 会 400
+  `start parameter parse error, the format should be YYYY-MM-DDTHH:MM:SS±HH:MM` —— 参数名写错时整个用量面板静默变空，测试里有一条断言 URL 不许出现 `from`/`to`。
 - 订阅积分**没有开放接口**，余额单位是**元 × 1e8**（要除回去）。
 
 ## 2. Magpie 钩子契约（来自 usemagpie.ai/docs/zh/plugins）
@@ -110,19 +112,34 @@ forwardChat({ url, method, headers, body, apiKey, signal, timeoutMs, fetchImpl, 
 
 ## 4. options（`plugins.json` 里 `options`，全部夹紧）
 
+> **真源是 `plugin/src/config.mjs` 的 `DEFAULTS` + `CLAMP`**（`readOptions()` 收口）。本表与它们逐条对齐，
+> `scripts/contract-diff.mjs` 会拿三份文件互相 diff，任何一边漏写都会报出来。
+>
+> ⚠️ 历史遗留：`baseUrl` / `chatTimeoutMs` / `autoCreateKey` / `showAllModels` / `modelOverrides` /
+> `extraHeaders` / `dailyUsageDays` 这七个字段**从未实现**，填了不生效，已从本表移除（它们留在
+> `LEGACY_OPTIONS` 里，doctor 与 contract-diff 会单独提示）。
+
 | key | 类型 | 默认 | 夹紧 |
 | --- | --- | --- | --- |
-| `providerId` | string | `qiniu-ai` | 只允许 `[a-z0-9-]` |
-| `baseUrl` | string | `https://api.qnaigc.com/v1` | 必须 https，去尾斜杠 |
+| `providerId` | string | `qiniu-ai` | `[a-z0-9-]`，≤40，不合法回落默认 |
+| `inferBase` | string | `https://api.qnaigc.com/v1` | 去尾斜杠 |
 | `maxConcurrency` | number | 4 | 1..1000 |
-| `usageCacheMs` | number | 30000 | ≥5000 |
-| `chatTimeoutMs` | number | 600000 | ≥30000 |
-| `promptCache` | boolean | true | — |
-| `autoCreateKey` | boolean | true | AK/SK 账号自动签发 sk- |
-| `showAllModels` | boolean | true | `provider.models` 拉 /v1/models |
-| `modelOverrides` | object | `{}` | id → 局部字段 |
-| `extraHeaders` | object | `{}` | 值过 `redact()` 才可日志 |
-| `dailyUsageDays` | number | 7 | 1..31 |
+| `usageCacheMs` | number | 30000 | 10000..600000 |
+| `liveModelList` | boolean | true | `provider.models` 拉 `/v1/models` 合并 |
+| `modelListTtlMs` | number | 3600000 | 60000..86400000 |
+| `promptCache` | boolean | false | 注入 `prompt_cache_key` |
+| `quotaFailover` | boolean | true | 402/欠费 403 改写成 429 让宿主切号 |
+| `showCost` | boolean | true | 是否查 cost / cost-detail |
+| `costSampleMs` | number | 600000 | 60000..3600000 |
+| `claudeBypass` | boolean | false | 原厂 Claude 透传进模型表 |
+| `keyLabel` | string | `""` | ≤40 |
+| `stateDir` | string | `""` | ≤300 |
+| `webSearch` | string | `auto` | `auto` / `on` / `off`（只透传，不注入） |
+| `pacingMinMs` | number | 800 | 0..60000，0 = 关间隔闸 |
+| `pacingJitterMs` | number | 400 | 0..60000 |
+| `breakerThreshold` | number | 5 | 0..100，0 = 禁用熔断 |
+| `breakerCooldownMs` | number | 1800000 | 60000..28800000 |
+| `retryOnNetworkError` | boolean | true | 传输层错误重试一次 |
 
 ## 5. loader.fetch 路由与错误分档（主控实现，A8 断言）
 

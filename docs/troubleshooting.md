@@ -156,6 +156,22 @@
 - **定位**：出站节奏闸按 `pacingMinMs`（默认 800ms）+ `pacingJitterMs`（默认 400ms）把同一账号的相邻请求拉开，这是**故意的**，为了让每分钟的请求分布先落进 RPM/TPM 窗口。
 - **处理**：确认自己没撞过 TPM 再调小（`pacingMinMs: 0` 只关间隔闸，抖动仍生效）；不同账号各有独立时间轴，互不拖累。
 
+### 想查「今天还剩多少 TPD」
+
+- **先说结论**：**剩余量查不到，已用量查得到。** 上游不公布 TPD 的日上限，控制台也没有这个数字，插件不会编一个分母出来；`429 UID rate limit reached for TPD` 就是到顶的信号本身。
+- **在哪看**：
+  - 用量面板（`magpie quota qiniu-ai` 或账号卡片）顶部的**「今日 TPD」窗口**：`已用 X tokens（含缓存 Y）；上游不公布日上限，429 TPD 即到达。重置于下一个 +08 零点`。
+  - 命令行走仓库根的 `node tools/doctor.mjs`，第 4 项「今日 TPD」给同一个数，顺带把 Key 有效性 / 余额 / options 自检一起查了。
+- **口径**：`/v3/stat/usage` 的 `days=1` 序列正好覆盖「+08 日界 0 点 → 现在」，与上游 TPD 的日界一致；上游单位是 kToken，插件 ×1000 换回 token。
+- **处理**：撞到 429 TPD 只能等下一个 +08 零点（**TPD 按账号计，换 Key 无效**）；不想撞就调小 `maxConcurrency`、拉大 `pacingMinMs`，把日用量控制在配额以内。窗口数字要实时就别把 `usageCacheMs` 调太大 —— 面板默认 30 秒缓存。
+
+### 模型自己消失了（健康快照）
+
+- **现象**：某个模型昨天还在模型列表里，今天不见了；或对话里选它直接没得选。上游 `/v1/models` 里这个模型仍然存在。
+- **定位**：插件的**进程内模型健康快照**（`src/health.mjs`）。同一个模型连续「模型级」失败到 `failureThreshold`（默认 3 次）就被标记 dead，`provider.models` 钩子把它的 `status` 改成 `deprecated` —— 宿主不显示也不路由 deprecated 模型，于是它在列表里「消失」。记的只是**模型级**失败：上游 503 未标价（插件改判 404 `model_not_priced`）、403 不在订阅组（404 `model_out_of_scope`）、模型不存在这类。账号级失败（401/402/403/429）**不**记进快照，那归熔断器。
+- **恢复**：dead 状态保留 `ttlMs`（默认 30 分钟），过期后插件重新给这个模型机会（失败从 1 重新数）；一次成功也立即清零恢复。快照只在内存里，**重启宿主进程即清空**。
+- **确认**：`magpie plugin diagnostics magpie-qiniu-lite`（插件 spec 名，provider 块是 `qiniu-ai`）里的 `modelHealth`，能直接看到 `dead` 名单与每个模型的失败计数 / 最近状态码；或跑仓库根的 `node tools/doctor.mjs --probe-models 1 --models <模型id>`，若上游实际 200 而宿主列表里没有它，就是快照判死（等 `ttlMs` 过期或重启宿主即可恢复）。
+
 ## 6. 流式与超时
 
 ### 流式回答中途断掉

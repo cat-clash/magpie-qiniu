@@ -100,17 +100,20 @@ test("usageEndpoints 端点表精确", () => {
 
 // ── fetchUsageSeries ─────────────────────────────────────────
 
-test("fetchUsageSeries：Bearer 头 + RFC3399 +08:00 精确 query", async () => {
+test("fetchUsageSeries：Bearer 头 + RFC3399 +08:00 精确 query（start/end，实测参数名）", async () => {
   const f = fakeFetch(respond({ body: { status: true, data: { usage: [] } } }));
   const r = await fetchUsageSeries({ account: KEY_ACCOUNT, fetchImpl: f, days: 7, now: NOW });
   const u = new URL(r.url);
   assert.equal(`${u.protocol}//${u.host}${u.pathname}`, "https://api.qnaigc.com/v3/stat/usage");
+  // 上游只认 start/end：发 from/to 会 400（2026-11-27 实测），这条断言就是回归闸
   assert.deepEqual(queryOf(r.url), {
-    from: "2026-11-19T00:00:00+08:00",
-    to: "2026-11-25T23:59:59+08:00",
+    start: "2026-11-19T00:00:00+08:00",
+    end: "2026-11-25T23:59:59+08:00",
     granularity: "day",
     timezone: "Asia/Shanghai",
   });
+  assert.equal(queryOf(r.url).from, undefined, "不许再发 from");
+  assert.equal(queryOf(r.url).to, undefined, "不许再发 to");
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].init.method, "GET");
   assert.equal(f.calls[0].headers.authorization, `Bearer ${FAKE_SK}`);
@@ -123,11 +126,11 @@ test("fetchUsageSeries：day 夹紧到 31、hour 夹紧到 7", async () => {
   const d = await fetchUsageSeries({ account: KEY_ACCOUNT, fetchImpl: f, granularity: "day", days: 90, now: NOW });
   assert.equal(d.days, 31);
   assert.equal(d.clampedDays, true);
-  assert.equal(queryOf(d.url).from, "2026-10-26T00:00:00+08:00");
+  assert.equal(queryOf(d.url).start, "2026-10-26T00:00:00+08:00");
 
   const h = await fetchUsageSeries({ account: KEY_ACCOUNT, fetchImpl: f, granularity: "hour", days: 30, now: NOW });
   assert.equal(h.days, 7);
-  assert.equal(queryOf(h.url).from, "2026-11-19T00:00:00+08:00");
+  assert.equal(queryOf(h.url).start, "2026-11-19T00:00:00+08:00");
   assert.equal(queryOf(h.url).granularity, "hour");
 
   const bad = await fetchUsageSeries({ account: KEY_ACCOUNT, fetchImpl: f, granularity: "hour", days: 0, now: NOW });

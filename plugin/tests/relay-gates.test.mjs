@@ -176,3 +176,65 @@ test("401 记为账号失败并保留 expired 标记", async () => {
   assert.equal(res.headers.get("x-magpie-sign-in"), "expired");
   assert.ok(breaker.blockedFor("acc-1") > 0);
 });
+
+// ── 模型健康回调（health.mjs 的接线） ──────────────────────
+
+test("模型级 404 会通知 onModelResult(false)，并带上 model_not_priced 之类的 code", async () => {
+  const calls = [];
+  const fetchImpl = async () => new Response(JSON.stringify({ error: { message: "the price of the model is not set" } }), { status: 503 });
+  const res = await forwardChat({
+    url: URL,
+    headers: new Headers(),
+    apiKey: SECRET,
+    timeoutMs: 5000,
+    fetchImpl,
+    options: { onModelResult: (ok, status, code) => calls.push({ ok, status, code }) },
+  });
+  assert.equal(res.status, 404);
+  assert.deepEqual(calls, [{ ok: false, status: 404, code: "model_not_priced" }]);
+});
+
+test("2xx 会通知 onModelResult(true)，账号级失败（429/403）一律不通知", async () => {
+  const okCalls = [];
+  await forwardChat({
+    url: URL,
+    headers: new Headers(),
+    apiKey: SECRET,
+    timeoutMs: 5000,
+    fetchImpl: async () => new Response("data: {}\n\n", { status: 200 }),
+    options: { onModelResult: (ok, status) => okCalls.push({ ok, status }) },
+  });
+  assert.deepEqual(okCalls, [{ ok: true, status: 200 }]);
+
+  const accountCalls = [];
+  for (const [status, body] of [
+    [429, "UID rate limit reached for TPM for UID"],
+    [403, "Account is suspended due to billing status"],
+  ]) {
+    await forwardChat({
+      url: URL,
+      headers: new Headers(),
+      apiKey: SECRET,
+      timeoutMs: 5000,
+      fetchImpl: async () => new Response(body, { status }),
+      options: { onModelResult: (ok, s, code) => accountCalls.push({ ok, s, code }) },
+    });
+  }
+  assert.deepEqual(accountCalls, [], "账号级失败不该把模型标成不可用");
+});
+
+test("onModelResult 抛错不影响请求本身返回", async () => {
+  const res = await forwardChat({
+    url: URL,
+    headers: new Headers(),
+    apiKey: SECRET,
+    timeoutMs: 5000,
+    fetchImpl: async () => new Response("data: {}\n\n", { status: 200 }),
+    options: {
+      onModelResult: () => {
+        throw new Error("回调写坏了");
+      },
+    },
+  });
+  assert.equal(res.status, 200);
+});

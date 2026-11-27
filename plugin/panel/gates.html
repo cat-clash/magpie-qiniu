@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>出站闸 · 七牛云 Qiniu AI</title>
+<!-- 面板契约（magpie.panels，slot: provider）：
+     1) 必须引宿主的 _magpie/bridge.js，否则拿不到 magpie.options / magpie.theme；
+     2) 只能引本目录内的文件，不许外链、不许发请求 —— 离线可用。 -->
+<link rel="stylesheet" href="gates.css">
+<script src="_magpie/bridge.js"></script>
+<script src="gates.js" defer></script>
+</head>
+<body>
+
+<div class="gates-root">
+  <form id="gates-form" class="gates-form" novalidate>
+
+    <header class="gates-head">
+      <h2 class="gates-title" id="gates-title">出站闸</h2>
+      <span class="gates-version" id="gates-version">qiniu-ai · 1.2.0</span>
+    </header>
+
+    <!-- 节奏闸：按账号拉开最小间隔 -->
+    <label class="gates-row" for="pacingMinMs">
+      <span class="gates-label" id="gates-label-pacing">最小间隔 pacingMinMs</span>
+      <input class="gates-input gates-num" id="pacingMinMs" name="pacingMinMs" type="number"
+             min="0" max="60000" step="50" inputmode="numeric" autocomplete="off">
+      <span class="gates-unit">ms</span>
+    </label>
+
+    <!-- 账号级熔断：连续失败到阈值就本地停一段时间；0 = 禁用 -->
+    <label class="gates-row" for="breakerThreshold">
+      <span class="gates-label" id="gates-label-breaker">熔断阈值 breakerThreshold</span>
+      <input class="gates-input gates-num" id="breakerThreshold" name="breakerThreshold" type="number"
+             min="0" max="100" step="1" inputmode="numeric" autocomplete="off">
+      <span class="gates-unit">次</span>
+    </label>
+
+    <!-- 额度切换：402 / 欠费 403 改写成 429，让宿主换下一个账号 -->
+    <label class="gates-row gates-row-bool" for="quotaFailover">
+      <span class="gates-label" id="gates-label-failover">额度用尽即换号 quotaFailover</span>
+      <input class="gates-input gates-check" id="quotaFailover" name="quotaFailover" type="checkbox">
+    </label>
+
+    <p class="gates-status" id="gates-status" role="status" aria-live="polite">读取中…</p>
+
+    <p class="gates-note" id="gates-note">
+      三个值都只影响本插件的出站行为，保存后下一个请求起生效。pacingMinMs 设 0 且 pacingJitterMs 也设 0 才是完全直通；
+      breakerThreshold 设 0 = 禁用熔断。其余选项请直接改 plugins.json 里的插件选项。
+    </p>
+
+    <p class="gates-effective" id="gates-effective" aria-live="polite"></p>
+
+    <div class="gates-actions">
+      <button class="gates-btn" id="gates-cancel" type="submit" name="action" value="cancel">取消</button>
+      <button class="gates-btn gates-primary" id="gates-save" type="submit" name="action" value="save">保存</button>
+    </div>
+
+  </form>
+</div>
+
+</body>
+</html>

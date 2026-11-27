@@ -157,6 +157,46 @@ function normalizeTime(v) {
 }
 
 /**
+ * 当日 TPD 估算（七牛控制台不给这个数，而它是唯一真会拦死人的窗口 —— 429
+ * "UID rate limit reached for TPD" 按账号的日 token 量计）。
+ *
+ * 口径（都是实测得出的保守值）：
+ *   · 上游序列的单位是 kToken（normalizeUsageSeries 的 input/output 已是「千 token」数），
+ *     ×1000 换回 token（与 buildUsage 第 5 类窗口同一口径）。
+ *   · 分母：Key 限额接口的 limit 单位是**元**，换不成 token；所以 TPD 窗口默认**没有
+ *     真实分母**，只报已用量 + display，不冒充 used 百分比。真有官方分母（未来上游
+ *     若给）再补 limit。
+ *   · days=1 的序列正好覆盖「本地日界（+08）0 点 → 现在」，与上游 TPD 的日界一致。
+ *
+ * @returns {{used:number, input:number, output:number, cached:number, models:number} | undefined}
+ *          没有当日数据时返回 undefined（调用方决定要不要出窗口）。
+ */
+export function estimateTpd(series) {
+  const rows = Array.isArray(series) ? series : [];
+  let input = 0;
+  let output = 0;
+  let cached = 0;
+  let models = 0;
+  for (const row of rows) {
+    const i = num(row?.input);
+    const o = num(row?.output);
+    if (!i && !o) continue;
+    input += i;
+    output += o;
+    cached += num(row?.cached);
+    models += 1;
+  }
+  if (!input && !output) return undefined;
+  return {
+    used: Math.round((input + output) * 1000),
+    input: Math.round(input * 1000),
+    output: Math.round(output * 1000),
+    cached: Math.round(cached * 1000),
+    models,
+  };
+}
+
+/**
  * @param {object} input
  * @param {object} [input.account] 宿主账号（用于 plan/user 文案）
  * @param {object} [input.series]  normalizeUsageSeries 的结果
@@ -241,6 +281,21 @@ export function buildUsage({ account, series, quota, balance, respack, costDay, 
     windows.push({ name: "今日 tokens", used: 0, aside: true, display: "上游没返回今天的用量", unit: "tokens" });
   }
 
+  // 5b) 今日 TPD（429 "rate limit reached for TPD" 的那个窗口）。
+  // 有已用量就独立出窗口顶到前面 —— 用户看得见「今天已经烧了多少」，才知道 429 从哪来。
+  const tpd = estimateTpd(series);
+  if (tpd) {
+    const cachedNote = tpd.cached > 0 ? `（含缓存 ${tokensText(tpd.cached)}）` : "";
+    windows.unshift({
+      name: "今日 TPD",
+      used: 0,
+      aside: true,
+      amount: tpd.used,
+      display: `已用 ${tokensText(tpd.used)} tokens${cachedNote}；上游不公布日上限，429 TPD 即到达。重置于下一个 +08 零点`,
+      unit: "tokens",
+    });
+  }
+
   // 6) 啥都没拿到：给一句人话，别让面板空着
   if (!windows.length) {
     windows.push({
@@ -253,7 +308,8 @@ export function buildUsage({ account, series, quota, balance, respack, costDay, 
   }
 
   const plan = pack ? `资源包 · ${pack.name}` : aksk ? "按量付费 · AK/SK" : "按量付费 · sk- Key";
-  const user = (balance && balance.email) || account?.email || account?.accountId || "";
+  // label 由 account-name.mjs 统一解析（宿主别名优先），比裸 email 好认
+  const user = account?.label || (balance && balance.email) || account?.email || account?.accountId || "";
   const out = { plan, windows };
   if (user) out.user = user;
   if (balance && Number.isFinite(balance.available)) out.balance = balance.available;

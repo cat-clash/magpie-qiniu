@@ -104,7 +104,10 @@ export function usageEndpoints({ inferOrigin = DEFAULT_INFER_ORIGIN, billingOrig
     balanceOverview: `${billing}/billing-api/v1/account/balance-overview`,
     respackList: `${billing}/billing-api/v1/respack/list`,
     query: {
-      usage: { from: "from", to: "to", granularity: "granularity", timezone: "timezone" },
+      // 实测 2026-11-27：上游只认 start/end —— 发 from/to 会 400
+      // 「start parameter parse error, the format should be YYYY-MM-DDTHH:MM:SS±HH:MM」。
+      // 之前按文档写 from/to，导致 /v3/stat/usage 一直查不到数（GUI 的「今日 tokens」永远空）。
+      usage: { start: "start", end: "end", granularity: "granularity", timezone: "timezone" },
       apiKeyCost: { type: "type" },
       costDetail: { startDate: "start_date", endDate: "end_date", grain: "granularity" },
       exportLog: { size: "size", page: "page" },
@@ -552,8 +555,8 @@ export async function fetchUsageSeries({
   const sod = startOfDayUtc(ts, off);
   const q = EP.query.usage;
   const params = {
-    [q.from]: toIso(sod - (span - 1) * 86400_000, off, "00:00:00"),
-    [q.to]: toIso(ts, off, "23:59:59"),
+    [q.start]: toIso(sod - (span - 1) * 86400_000, off, "00:00:00"),
+    [q.end]: toIso(ts, off, "23:59:59"),
     [q.granularity]: gran,
     [q.timezone]: String(timezone || DEFAULT_TIMEZONE),
     ...(model ? { model: String(model) } : {}),

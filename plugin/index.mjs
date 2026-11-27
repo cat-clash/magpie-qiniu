@@ -41,6 +41,8 @@ import {
 import { qiniuAuthHeader } from "./src/sign.mjs";
 import { createPacing } from "./src/pacing.mjs";
 import { createBreaker } from "./src/breaker.mjs";
+import { createHealthStore } from "./src/health.mjs";
+import { accountLabel } from "./src/account-name.mjs";
 import { PORTAL_URL, REQUEST_LOG_CAP } from "./src/config.mjs";
 
 // ---- options ---------------------------------------------------------------
@@ -77,6 +79,8 @@ export function readOptions(raw = {}) {
     breakerThreshold: numOption(o.breakerThreshold, DEFAULTS.breakerThreshold, CLAMP.breakerThreshold),
     breakerCooldownMs: numOption(o.breakerCooldownMs, DEFAULTS.breakerCooldownMs, CLAMP.breakerCooldownMs),
     retryOnNetworkError: o.retryOnNetworkError !== false,
+    // 七牛的 tools:{type:"web_search"} 会被上游忽略（只透传、不注入），这个键只作记录与未来开关
+    webSearch: ["auto", "on", "off"].includes(String(o.webSearch || "")) ? String(o.webSearch) : DEFAULTS.webSearch,
   };
 }
 
@@ -190,7 +194,9 @@ async function loadUsage({ auth, opts, signal, fetchImpl }) {
 
   await Promise.allSettled(tasks);
   const usage = buildUsage({
-    account: auth,
+    // 账号显示名交给 account-name.mjs 统一解析（alias → email → accountId → uid → 脱敏 Key）。
+    // 宿主设过的别名（magpie accounts alias）在这里第一次被真正用上。
+    account: { ...(auth || {}), label: accountLabel(auth) },
     series,
     quota,
     balance: balance || undefined,
@@ -217,6 +223,8 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
   // 出站两道本地闸，都按账号分桶：节奏（预防 TPM/RPM）+ 熔断（TPD/欠费止损）
   const pacing = createPacing({ minMs: opts.pacingMinMs, jitterMs: opts.pacingJitterMs });
   const breaker = createBreaker({ threshold: opts.breakerThreshold, cooldownMs: opts.breakerCooldownMs });
+  // 模型健康快照：连续「模型级」失败（404 未标价 / 不在订阅组）就标 dead，models 钩子把它藏起来
+  const health = createHealthStore();
 
   const config = async (cfg) => {
     if (!cfg || typeof cfg !== "object") return;
@@ -308,11 +316,13 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
           return jsonResponse({ error: { message: "请求体无法序列化", type: "invalid_request_error", code: "invalid_json" } }, { status: 400 });
         }
       }
+      let requestedModel = "";
       if (typeof body === "string" && body) {
         const looksJson = /^\s*[[{]/.test(body);
         try {
           const parsed = JSON.parse(body);
           const model = typeof parsed?.model === "string" ? parsed.model : "";
+          requestedModel = model;
           pushRequest(auth, { model, method, at: Date.now(), status: "sent" }, REQUEST_LOG_CAP);
         } catch {
           // 看着像 JSON 却解析不了：当场回 400，别让上游替我们报错（省一次往返，也让错误更准）
@@ -338,6 +348,11 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
           pacing,
           breaker,
           retryOnNetworkError: opts.retryOnNetworkError,
+          // 模型级可用性 → 健康快照（账号级失败不进这里，避免把好模型标死）
+          onModelResult: (ok, status, code) => {
+            if (!requestedModel) return;
+            health.record(requestedModel, ok, { status, code });
+          },
         },
       });
       return response;
@@ -439,16 +454,26 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
     id: provider,
     async models(current, ctx = {}) {
       const base = current?.models && typeof current.models === "object" ? current.models : staticModelTable({ claudeBypass: opts.claudeBypass });
-      if (!opts.liveModelList) return base;
-      try {
-        const authValue = pickAuth(ctx?.auth || {});
-        const table = await loadLiveTable({ auth: authValue, opts, signal: ctx?.signal });
-        if (!table) return base;
-        // 在线表优先，但把磁盘上用户自己改过的条目保留下来（disabled 之类）
-        return { ...base, ...table };
-      } catch {
-        return base;
+      let table = base;
+      if (opts.liveModelList) {
+        try {
+          const authValue = pickAuth(ctx?.auth || {});
+          const live = await loadLiveTable({ auth: authValue, opts, signal: ctx?.signal });
+          // 在线表优先，但把磁盘上用户自己改过的条目保留下来（disabled 之类）
+          if (live) table = { ...base, ...live };
+        } catch {
+          table = base;
+        }
       }
+      // 健康快照：连续失败到阈值的模型标 deprecated，宿主不再路由它。
+      // 构造新对象，别原地改缓存表（缓存要保留上游的原始状态）。
+      const dead = table && health.snapshot().dead;
+      if (dead && dead.length) {
+        const out = { ...table };
+        for (const id of dead) if (out[id]) out[id] = { ...out[id], status: "deprecated" };
+        return out;
+      }
+      return table;
     },
   };
 
@@ -464,6 +489,7 @@ export const QiniuPlugin = async (ctx = {}, options = {}) => {
         cost: costStats,
         pacing: pacing.stats(),
         breaker: breaker.stats(),
+        modelHealth: health.snapshot(),
         requestLog: requestLogOf,
         redact,
       };

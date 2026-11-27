@@ -258,6 +258,7 @@ magpie plugin add github:cat-clash/magpie-qiniu
 | `claudeBypass` | boolean | `false` | 把原厂 Claude 透传通路（`/bypass/anthropic`）纳入模型表 |
 | `keyLabel` | string | `""` | ≤40，给自动签发的 Key 打备注 |
 | `stateDir` | string | `""` | ≤300，状态目录（当前仅保留） |
+| `webSearch` | string | `auto` | `auto` / `on` / `off`；七牛的 `tools:{type:"web_search"}` 上游会忽略，本项只记录不注入 |
 | `pacingMinMs` | number | `800` | 0..60000，**出站节奏闸**：同账号相邻放行的最小间隔，`0` = 关掉间隔闸 |
 | `pacingJitterMs` | number | `400` | 0..60000，每次放行叠加的随机抖动上限 |
 | `breakerThreshold` | number | `5` | 0..100，**账号级熔断**：连续失败多少条开闸，`0` = 禁用 |
@@ -285,6 +286,59 @@ magpie plugin add github:cat-clash/magpie-qiniu
 ```bash
 magpie plugin options magpie-qiniu-lite '{"showAllModels":false,"dailyUsageDays":14}'
 ```
+
+## 诊断与自带工具（1.2.0）
+
+仓库根带两个**不进插件包**的脚本：**doctor**（一条命令回答「这个七牛账号现在还能不能用」）和
+**contract-diff**（守住 options 三处文档不漂移）。这些脚本都在仓库根，装到 magpie 里的插件本体
+不依赖它们：`doctor` 反向往 `plugin/` 里取钩子与纯函数，`contract-diff` 只读仓库里的三个文件。
+
+### doctor：`node tools/doctor.mjs`
+
+读 `plugin-auth.json` 与 `plugins.json`，逐条给结论 + 修复建议，输出 `[ok]` / `[!]` / `[x]` 三档，
+问题项下面跟一行 `  →` 开头的建议；退出码 `0` 全通 / `1` 有问题 / `2` 用法错误。查七项：
+
+1. 凭据是否存在（`sk-` Key / AK/SK）；
+2. Key 是否有效（带 Bearer 打 `GET /v1/models`，200 = 有效）；
+3. 余额 / 待付 / 资源包（需要 AK/SK；`sk-` 账号查不到属正常）；
+4. 今日 TPD 已用量（429 TPD 命中前唯一的预警指标）；
+5. 模型矩阵（需要 `--probe-models <n>`，会真发 `max_tokens=1` 的 chat，产生极小费用）；
+6. options 自检（被夹紧的值、从未实现的字段、拼错的键）；
+7. 熔断 / 节奏闸阈值现状（解释「为什么变慢了」）。
+
+```powershell
+node tools/doctor.mjs                     # 只读探测，不产生 chat 费用
+node tools/doctor.mjs --probe-models 3    # 顺带真探 3 个模型
+node tools/doctor.mjs --json              # 机器可读（脚本 / CI 用）
+```
+
+`--auth <path>` 指定别的 plugin-auth.json，`--provider <id>` 换 provider id，`--models a,b,c`
+指定要探的模型（隐含开启探测），`--help` 看全部选项。真实输出长这样：
+
+```text
+=== magpie-qiniu 诊断 · qiniu-ai@1.2.0 ===
+
+-- 主账号（按量付费 · sk- Key） --
+[ok] 凭据：有 sk- Key sk-AB2…wxYZ（按量付费 · sk- Key）
+[ok] Key 有效性：Key 有效（上游 91 个模型）
+[ok] 余额 / 资源包：sk- Key 账号没有 AK/SK，查不到余额（用 AK/SK 登录才有）
+[ok] 今日 TPD：今日已用 3.2 万 tokens（2 个模型；缓存 8000 tokens）
+  → 上游不公布 TPD 上限；撞到会返回 429 TPD，重置于下一个 +08 零点
+
+-- 配置 --
+[ok] options 全部按预期生效
+  生效值：pacingMinMs=800 pacingJitterMs=400 breakerThreshold=5 breakerCooldownMs=1800000 quotaFailover=true
+
+=== 总结 ===
+[ok] 账号 / 余额 / 用量 / 配置 全通
+```
+
+### contract-diff：`node scripts/contract-diff.mjs`
+
+一条命令比对三处的 options 字段：`plugin/src/config.mjs` 的 `DEFAULTS` 键、README「插件配置」表、
+`CONTRACT.md` 反引号字段，报三类差集 —— **README 漏写**（用户看不到开关）、**代码没实现**
+（填了不生效）、**契约没提**。退出码 `0` 无差集 / `2` 有差集 / `1` 缺文件；`--json` 出机器可读结果。
+改了 options 定义之后跑一次，三处就不会各说各话。
 
 ## 测试
 
@@ -319,6 +373,8 @@ $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\
 | `temporary key is not allowed` | 你填的是 `tk-` 临时 Key，换 `sk-` 正式 Key |
 | 用量面板没百分比 | 上游没给分母，插件不编 —— 这是设计 |
 | 改完代码 magpie 里没变化 | 命中宿主缓存，要 bump `plugin/package.json` 的 `version` |
+| 今日 tokens 显示「上游没返回今天的用量」 | 1.2.0 之前插件把 `/v3/stat/usage` 的查询参数写成 `from`/`to`，上游只认 `start`/`end`（400 `start parameter parse error`）—— 先确认插件版本；仍是空的再查 `tk-` 临时 Key 无权查用量、或撞了 5 req/s 限流（见 [docs/troubleshooting.md](./docs/troubleshooting.md)） |
+| 某个模型突然从列表消失 | 健康快照连续 3 次「模型级」失败判了 dead，插件把它 `status` 改成 `deprecated` 藏起来，宿主不再路由；等 30 分钟（`ttlMs`）自动重新给机会，或重启宿主进程立即清空。`magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth` 可查哪些模型被判死 |
 
 ## 开发
 

@@ -227,6 +227,14 @@ export async function forwardChat({ url, method = "POST", headers, body, apiKey,
   const bucket = String(options.accountKey || "*");
   const breaker = options.breaker;
   const pacing = options.pacing;
+  // 模型健康回调：回调自带 bug 不该影响请求本身（health 记账是旁路）
+  const noteModel = (ok, status, code) => {
+    try {
+      options.onModelResult?.(ok, status, code);
+    } catch {
+      /* 忽略：旁路观测不允许打断出网 */
+    }
+  };
 
   // 1) 熔断闸
   if (breaker) {
@@ -290,6 +298,8 @@ export async function forwardChat({ url, method = "POST", headers, body, apiKey,
 
   if (response.ok) {
     if (breaker) breaker.record(bucket, true);
+    // 模型健康快照（health.mjs）只关心「这个模型还能不能用」
+    noteModel(true, response.status);
     return response;
   }
 
@@ -301,11 +311,22 @@ export async function forwardChat({ url, method = "POST", headers, body, apiKey,
     text = "";
   }
   const verdict = classifyResponse(response.status, text, options);
+  let modelCode = "";
+  try {
+    modelCode = String(JSON.parse(text)?.error?.code || "");
+  } catch {
+    modelCode = "";
+  }
   // 熔断记账：账号级失败算失败；模型级 404 说明账号没问题（只是这个模型不行），算成功
   if (breaker) {
     if (!verdict.pass && verdict.status === 404) breaker.record(bucket, true);
     else if (!verdict.pass) breaker.record(bucket, isAccountLevelFailure(verdict.status) ? false : true);
     else if (response.status === 401) breaker.record(bucket, false);
+  }
+  // 模型健康快照只吃「模型级」失败：改判成 404 的（未标价 / 不在订阅组 / 不存在）才记账。
+  // 401/402/403/429 是账号级，已经在 breaker 里，重复记会把好模型标死。
+  if (!verdict.pass && verdict.status === 404) {
+    noteModel(false, 404, modelCode || verdict.body?.error?.code || "");
   }
   if (verdict.pass) {
     const headersOut = new Headers(response.headers);

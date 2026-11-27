@@ -4,7 +4,7 @@
 
 export const PROVIDER = "qiniu-ai";
 export const PROVIDER_NAME = "七牛云 Qiniu AI";
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 
 // ---- 上游端点 ---------------------------------------------------------------
 // 注意：INFER_BASE 自带 /v1。Anthropic 官方 SDK 的 base_url 惯例是不带 /v1

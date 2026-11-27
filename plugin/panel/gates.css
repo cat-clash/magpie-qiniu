@@ -1,0 +1,160 @@
+/* panel/gates.css —— 出站闸面板（magpie.panels，slot: provider）
+ *
+ * 颜色/字体全部走 bridge 暴露的 CSS 变量并带兜底值：宿主换浅色/深色主题时面板自动跟随，
+ * 不写死背景色，也不引任何外部字体或图片。
+ * 类名前缀：gates-（面板自身结构）/ fl-（与同类面板保持一致的通用小工具类，本文件未用到）。
+ */
+
+.gates-root {
+  font: inherit;
+  color: inherit;
+}
+
+.gates-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+.gates-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gates-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gates-version {
+  font-size: 11px;
+  color: var(--magpie-muted, #888);
+  font-variant-numeric: tabular-nums;
+}
+
+.gates-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.gates-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--magpie-muted, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gates-input {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--magpie-line, #3a3a3a);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  box-sizing: border-box;
+}
+
+.gates-num {
+  width: 96px;
+  flex: 0 0 auto;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.gates-check {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+}
+
+.gates-unit {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--magpie-muted, #888);
+  min-width: 18px;
+}
+
+.gates-input:focus-visible {
+  outline: 2px solid var(--magpie-accent, #4c8dff);
+  outline-offset: 1px;
+}
+
+.gates-status {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--magpie-green, #3ba55d);
+}
+
+.gates-status:empty {
+  display: none;
+}
+
+.gates-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--magpie-muted, #888);
+}
+
+.gates-effective {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--magpie-faint, #777);
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.gates-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.gates-btn {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 4px 12px;
+  border: 1px solid var(--magpie-line, #3a3a3a);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.gates-btn:hover {
+  background: var(--magpie-hover, rgba(127, 127, 127, 0.14));
+}
+
+.gates-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.gates-primary {
+  border-color: var(--magpie-accent, #4c8dff);
+  color: var(--magpie-accent, #4c8dff);
+  font-weight: 600;
+}
+
+/* 深色主题：宿主给 <html> 加 .dark 时把兜底色压暗，避免浅色兜底值刺眼 */
+.dark .gates-input,
+.dark .gates-btn {
+  border-color: var(--magpie-line, #4a4a4a);
+}
