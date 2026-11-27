@@ -37,6 +37,24 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 分组：节奏闸 / 熔断 / 账号切换 / 缓存，每组一条小标题 + 若干行 */
+.gates-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--magpie-line-weak, rgba(127, 127, 127, 0.22));
+  border-radius: 8px;
+}
+
+.gates-group-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--magpie-muted, #888);
+}
+
 .gates-row {
   display: flex;
   align-items: center;
@@ -117,6 +135,38 @@
   color: var(--magpie-faint, #777);
   font-variant-numeric: tabular-nums;
   word-break: break-word;
+}
+
+/* 只读状态区：当前生效值 + 版本号 + options.set 整份替换的提示，任何一项都不写回 options */
+.gates-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px dashed var(--magpie-line-weak, rgba(127, 127, 127, 0.22));
+  border-radius: 8px;
+}
+
+.gates-readonly-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--magpie-muted, #888);
+}
+
+.gates-versionline {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--magpie-faint, #777);
+  font-variant-numeric: tabular-nums;
+}
+
+.gates-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--magpie-faint, #777);
 }
 
 .gates-actions {

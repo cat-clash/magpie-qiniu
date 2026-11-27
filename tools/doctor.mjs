@@ -15,10 +15,13 @@
 //   node tools/doctor.mjs --probe-models 3    # 顺带探 3 个模型
 //   node tools/doctor.mjs --json              # 机器可读
 //   node tools/doctor.mjs --auth <path>       # 指定 plugin-auth.json
+//   node tools/doctor.mjs --fix               # 预览 options 自愈计划（dry-run，不写文件）
+//   node tools/doctor.mjs --apply             # 真写：先备份 plugins.json 再清脏键/写生效值
 //
 // 铁律：绝不打印完整 Key / AK / SK；退出码 0 = 全通，1 = 有问题，2 = 用法错误。
+//       绝不碰 plugin-auth.json / providers.json / settings.json；绝不停/重启 magpie。
 
-import { readFileSync, existsSync } from "node:fs";
+import { copyFileSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { QiniuPlugin } from "../plugin/index.mjs";
@@ -33,6 +36,7 @@ import {
 import { readRespack, estimateTpd } from "../plugin/src/usage.mjs";
 import { qiniuAuthHeader } from "../plugin/src/sign.mjs";
 import { buildReport, classifyBalance, classifyKeyProbe, classifyTpd, optionsAudit, renderReport } from "../plugin/src/doctor.mjs";
+import { applyPlan, describePlan, isEmptyPlan, planFix } from "../plugin/src/fix.mjs";
 
 // UTF-8 铁律（陷阱 #1）：被 cmd / 计划任务拉起时 print("✓") 会 UnicodeEncodeError
 for (const stream of [process.stdout, process.stderr]) {
@@ -53,7 +57,12 @@ const usage = `magpie-qiniu 诊断 ${VERSION}
   --provider <id>       provider id（默认 ${PROVIDER}）
   --probe-models <n>    附带探 n 个模型（默认 0 = 不探，避免产生 chat 费用）
   --models a,b,c        指定要探的模型 id（隐含开启探测）
+  --fix                 options 自愈**预览**（dry-run，一个字节都不写）
+  --apply               真的写 plugins.json（隐含 --fix；先备份 .bak-doctor-<时间戳>）
   --help, -h            显示本帮助
+
+自愈只动 plugins.json 里 spec 含 qiniu 的那一条的 options：
+删除审计里的 legacy / unknown 键，把被夹紧的值写成实际生效值，其余原样保留。
 
 退出码：0 全通 / 1 有问题 / 2 用法错误
 `;
@@ -69,6 +78,8 @@ function argValue(flag, fallback = "") {
 }
 
 const wantJson = argv.includes("--json");
+const wantApply = argv.includes("--apply");
+const wantFix = wantApply || argv.includes("--fix"); // --apply 隐含 --fix
 const provider = argValue("--provider", PROVIDER);
 const configDir = process.env.MAGPIE_CONFIG_DIR || join(homedir(), ".config", "magpie");
 const authPath = argValue("--auth", join(configDir, "plugin-auth.json"));
@@ -242,5 +253,87 @@ report.authPath = authPath;
 report.pluginsPath = pluginsPath;
 report.probeModels = probeModels;
 
+// ── 7. options 自愈（--fix 预览 / --apply 真写）──────────────────────────────
+// 安全线：只动 plugins.json 里**那一条 qiniu 条目**的 options，其它插件、其它字段原样保留；
+// 写前先备份，写失败就把旧内容原样写回去；plugin-auth.json / providers.json / settings.json 一律不碰。
+const fixPlan = planFix({ rawOptions, audit, effective });
+const fixEmpty = isEmptyPlan(fixPlan);
+if (wantFix && wantJson) report.fix = { dryRun: !wantApply, empty: fixEmpty, remove: fixPlan.remove, set: fixPlan.set, keep: fixPlan.keep, reasons: fixPlan.reasons };
+
+/** plugins.json.bak-doctor-<yyyyMMdd-HHmmss>（同目录）。 */
+function stampNow() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+}
+
+/** 从原文首行缩进判定缩进；测不出来（单行 JSON 等）就用 2 空格。 */
+function detectIndent(text) {
+  const m = /\n([ \t]+)["\]}]/.exec(text);
+  return m ? m[1] : "  ";
+}
+
+/**
+ * 备份 → 写 → 失败回滚。返回 { backupPath }。
+ * 返回的 root 是 plugins.json 解析后的整棵对象，只在 entry.options 上换内容。
+ */
+function writeFix() {
+  const oldText = readFileSync(pluginsPath, "utf8");
+  const bom = oldText.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const indent = detectIndent(oldText);
+  const trailing = oldText.endsWith("\n") ? "\n" : "";
+  const backupPath = `${pluginsPath}.bak-doctor-${stampNow()}`;
+  const prevOptions = pluginEntry.options;
+  pluginEntry.options = applyPlan(rawOptions, fixPlan);
+  const nextText = bom + JSON.stringify(pluginsFile, null, indent) + trailing;
+  copyFileSync(pluginsPath, backupPath);
+  try {
+    writeFileSync(pluginsPath, nextText, "utf8");
+  } catch (e) {
+    pluginEntry.options = prevOptions;
+    let rolled = false;
+    try {
+      writeFileSync(pluginsPath, oldText, "utf8");
+      rolled = true;
+    } catch {
+      /* 回滚都失败：下面把信息一起打出来，让用户手工拿备份 */
+    }
+    const err = new Error(String(e?.message || e));
+    err.backupPath = backupPath;
+    err.rolled = rolled;
+    throw err;
+  }
+  return { backupPath };
+}
+
 for (const line of renderReport(report, { json: wantJson })) process.stdout.write(`${line}\n`);
 process.exitCode = report.ok ? 0 : 1;
+
+if (wantFix && !wantJson) {
+  const out = (s = "") => process.stdout.write(`${s}\n`);
+  out("");
+  out(wantApply ? "-- options 自愈（--apply，真写） --" : "-- options 自愈（--fix，只预览） --");
+  if (fixEmpty) {
+    out("[ok] 没有需要修的东西");
+    if (!wantApply) out(`  （只读了 ${pluginsPath}，一个字节都没写）`);
+  } else if (!wantApply) {
+    for (const line of describePlan(fixPlan)) out(`  · ${line}`);
+    out("  只预览：一个字节都没写；加 --apply 才会真正写入");
+  } else if (!pluginEntry || !existsSync(pluginsPath)) {
+    out(`[x] 写不了：plugins.json 里没找到可改的 qiniu 条目（读的是 ${pluginsPath}）`);
+    process.exitCode = 1;
+  } else {
+    try {
+      const { backupPath } = writeFix();
+      for (const line of describePlan(fixPlan)) out(`  · ${line}`);
+      out(`  备份：${backupPath}`);
+      out("  重跑 `node tools/doctor.mjs` 验证（-- 配置 -- 应变成 options 全部按预期生效）");
+      out("  不用重启 magpie：插件下次加载 options 就生效；要手工还原就 copy 备份覆盖回去");
+    } catch (e) {
+      out(`[x] 写入失败：${e?.message || e}`);
+      if (e?.backupPath) out(`  备份（写前已生成，含原始内容）：${e.backupPath}`);
+      out(e?.rolled ? "  已回滚：plugins.json 恢复成写入前的原内容" : `  回滚未能完成，请手工用备份恢复：copy "${e?.backupPath}" "${pluginsPath}"`);
+      process.exitCode = 1;
+    }
+  }
+}

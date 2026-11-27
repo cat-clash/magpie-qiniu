@@ -282,18 +282,22 @@ magpie plugin add github:cat-clash/magpie-qiniu
 
 诊断：`magpie plugin diagnostics magpie-qiniu-lite` 里能看到 `pacing` / `breaker` 两块实时快照。
 
+这些键现在也能在 magpie 的 provider 设置面板里改，不用手写 JSON：面板只管六个键 ——
+`pacingMinMs` / `pacingJitterMs` / `breakerThreshold` / `breakerCooldownMs` / `quotaFailover` /
+`usageCacheMs`（按「节奏闸 / 熔断 / 账号切换 / 缓存」分组，毫秒类在界面上按「秒」「分钟」展示，
+写回仍是毫秒）；其余选项还是直接改 `plugins.json` 里的插件 options。
 
-```bash
-magpie plugin options magpie-qiniu-lite '{"showAllModels":false,"dailyUsageDays":14}'
-```
+## 诊断与自带工具
 
-## 诊断与自带工具（1.2.0）
+仓库根带几个**不进插件包**的脚本：**check**（宿主侧体检）、**doctor**（账号侧诊断）、
+**score**（模型评分与推荐）和 **contract-diff**（守住 options 三处文档不漂移）。它们都在仓库根，
+装到 magpie 里的插件本体不依赖它们：`check` / `doctor` 反向往 `plugin/` 里取钩子与纯函数，
+`score` 只读模型目录，`contract-diff` 只读仓库里的三个文件。
 
-仓库根带两个**不进插件包**的脚本：**doctor**（一条命令回答「这个七牛账号现在还能不能用」）和
-**contract-diff**（守住 options 三处文档不漂移）。这些脚本都在仓库根，装到 magpie 里的插件本体
-不依赖它们：`doctor` 反向往 `plugin/` 里取钩子与纯函数，`contract-diff` 只读仓库里的三个文件。
+**分工一句话**：`check` 查**宿主侧**（本机装得对不对），`doctor` 查**账号侧**（这账号还能不能用），
+`score` 查**模型侧**（该挑哪个跑）。三件互不重叠，谁出问题跑谁。
 
-### doctor：`node tools/doctor.mjs`
+### doctor：账号侧诊断
 
 读 `plugin-auth.json` 与 `plugins.json`，逐条给结论 + 修复建议，输出 `[ok]` / `[!]` / `[x]` 三档，
 问题项下面跟一行 `  →` 开头的建议；退出码 `0` 全通 / `1` 有问题 / `2` 用法错误。查七项：
@@ -333,7 +337,133 @@ node tools/doctor.mjs --json              # 机器可读（脚本 / CI 用）
 [ok] 账号 / 余额 / 用量 / 配置 全通
 ```
 
-### contract-diff：`node scripts/contract-diff.mjs`
+**`--fix` / `--apply`：清理过期的 options**
+
+```powershell
+node tools/doctor.mjs --fix       # 空跑：只列将要改什么，不写文件
+node tools/doctor.mjs --apply     # 真正写 plugins.json（先备份）
+```
+
+`--fix` 是 **dry-run**（一个字节都不写）：只列三件事 —— 哪些**从未实现的字段**会被删掉
+（`baseUrl` / `chatTimeoutMs` / `autoCreateKey` / `showAllModels` / `modelOverrides` /
+`extraHeaders` / `dailyUsageDays`）、哪些**不认识的键**会被删掉（多半是拼错，写了也不生效）、
+哪些**被夹紧的值**会被改写成实际生效值。`--apply` 隐含 `--fix`，才真正落盘，
+并且**先备份**成 `plugins.json.bak-doctor-<时间戳>`。
+
+安全边界：只改 `spec` 含 `qiniu` 的那**一个**插件条目的 `options`，其它插件、其它字段原样保留；
+不碰 `provider` 状态，不碰 `plugin-auth.json`，不动账号凭据。想反悔就把那份备份覆盖回去。
+
+### check：宿主侧体检
+
+**插件明明装了却不出字时，先跑这个。**
+
+```powershell
+node tools/check.mjs                        # 只读，看宿主侧配好没有
+node tools/check.mjs --json                 # 机器可读（脚本 / CI 用）
+node tools/check.mjs --config-dir <path>    # 指定 magpie 配置目录（默认 ~/.config/magpie）
+node tools/check.mjs --repo <path>          # 指定仓库根（默认按脚本位置推）
+```
+
+和 doctor 的分工是**观测面**，不是同一件事的两遍：doctor 每条结论都要真的打一次上游，
+check **一条网络请求都不发**，只看本机装成什么样 —— 所以它秒回、零费用、可以先跑。
+
+输出四级符号：`✓` 通过 / `⚠` 待处理 / `✗` 阻塞 / `ℹ` 提示，问题项下面跟一行
+`  → 修复：…`。退出码 `0` 全通 / `1` 有 `⚠` 或 `✗` / `2` 用法错误。
+
+| 检查项 | 查什么 | 出问题时的典型表现 |
+|---|---|---|
+| 插件安装 | `plugins.json` 里有没有 `spec` 含 `qiniu` 的条目；装了多条会单独警告 | 一条都没有 → 宿主根本不会加载它；两条 → 互相盖配置 |
+| provider 开关 | `providers.json` 里 `qiniu-ai` 是不是 `off: true` | **请求全部 404，界面上什么都不出** |
+| 账号 | `plugin-auth.json` 里这个 provider 下有几个账号、有没有 `sk-` Key | 0 条 → 从没登录成功过；有账号但都没 Key → AK/SK 没签出 Key |
+| 代理 | `settings.json` 的 `proxy` 字段（只回显 `host:port`，不回显账号密码） | `direct` 或怪写法 → 该走代理的请求一直超时 |
+| 仓库完整性 | `plugin/index.mjs`、`plugin/src/config.mjs`、`index.mjs`、`package.json` 在不在 | 装的是半份源码，插件加载直接报错 |
+| Node 版本 | 当前 Node 是否 ≥ 22（`engines.node`） | 低版本语法错，插件加载失败 |
+| magpie 可执行文件 | `MAGPIE_BIN` 或 PATH 里找不找得到 `magpie` | 装 / 卸 / login / provider 这些命令全都不存在 |
+
+示例（实际输出以运行结果为准）：
+
+```text
+=== magpie-qiniu 宿主侧体检 · qiniu-ai@1.3.0 ===
+仓库：<仓库根>
+配置：<~/.config/magpie>
+
+✓ Node 版本：v22.x ≥ 22
+✓ 仓库完整性：4 个关键文件齐全
+⚠ 插件安装：找到 2 条：<spec-a>、<spec-b>（读的是 <配置目录>/plugins.json）
+  → 修复：重复安装会让宿主只认其中一份、且两份会互相盖配置；magpie plugin remove 掉多余的那个
+✗ provider 开关：qiniu-ai 是 off:true（模型选不到它，请求直接 404）
+  → 修复：magpie provider on qiniu-ai 打开；plugin off/on 之后要重新开一次
+✓ 账号：1 个账号都有 sk- Key
+✓ 代理：127.0.0.1:7897
+✓ magpie 可执行文件：<magpie 路径>
+
+=== 总结 ===
+✗ 1 项阻塞：
+  · provider 开关：qiniu-ai 是 off:true（读的是 <配置目录>/providers.json）
+⚠ 1 项待处理：
+  · 插件安装：找到 2 条：<spec-a>、<spec-b>
+最可能的一环：provider 开关 —— magpie provider on qiniu-ai 打开；plugin off/on 之后要重新开一次
+```
+
+最典型的用途就是「插件明明装了却不出字」：**十有八九是 `provider off`**。
+`magpie plugin off/on`、以及重启 magpie，都会把它置回 off，之后的请求全部 404，界面上
+一个字都出不来。check 直接把这项标成 `✗`，并在末尾给出「最可能的一环」和那条
+`magpie provider on`。
+
+### score：挑模型
+
+91 个模型按用途打分排序，不用再翻 catalog 逐行比。分数 `0..1`，由四个维度加权求和：
+**上下文窗口**（`context`）、**输出上限**（`output`）、**价格**（`price`，`free` 顶格）、
+**能力**（`capability`，看 `vision` / `reasoning` / `toolCall`）。权重随 `--profile` 变。
+
+```powershell
+node tools/score.mjs --profile coding             # 挑写代码的（工具调用权重最高）
+node tools/score.mjs --profile cheap --limit 10   # 找免费的 / 最便宜的
+node tools/score.mjs --all --json > models.json   # 全量机器可读，自己排序
+```
+
+| 参数 | 作用 |
+|---|---|
+| `--profile balanced\|coding\|long-context\|vision\|cheap` | 用途档位，决定四维权重（默认 `balanced`） |
+| `--limit N` | 只显示前 N 名（默认 10） |
+| `--all` | 列出全部模型（覆盖 `--limit`） |
+| `--exclude a,b,c` | 手动排除模型 id，逗号分隔 |
+| `--json` | 机器可读（含权重、四维分与总分） |
+
+| profile | 权重偏向 | 什么时候用 |
+|---|---|---|
+| `balanced` | 四维均衡 | 不知道选什么，先看这档的前几名 |
+| `coding` | 能力（`toolCall` + `reasoning`）占大头，其次上下文 | 写代码、跑带工具的 agent 链路 |
+| `long-context` | 上下文窗口压倒性优先 | 整仓读码、长文档问答 |
+| `vision` | `vision` 是硬门槛，其次才比别的 | 图片 / 截图 / PDF 转文字 |
+| `cheap` | 价格优先，`free` 直接顶格 | 大批量批处理、只想先试试 |
+
+真实输出（`node tools/score.mjs --profile coding --limit 5` 的头部，模型目录随版本变化）：
+
+```text
+模型评分 · profile=coding · 写代码：优先工具调用（能改文件）+ 推理位，价格只占 10%
+权重 context 0.2 / output 0.15 / price 0.1 / capability 0.55　·　目录 91 条，未排除任何模型
+
+  #  模型 id                 分数    ctx    out    price  cap    标签
+  ----------------------------------------------------------------------
+  1  <model-id>             1.0000  1.00   1.00   1.00   1.00   free,vision,reasoning,tools,1M-ctx
+  2  <model-id>             1.0000  1.00   1.00   1.00   1.00   free,reasoning,tools,1M-ctx
+  3  <model-id>             0.9803  0.90   1.00   1.00   1.00   free,reasoning,tools
+
+为什么前 3 名是这个分（profile=coding）：
+  · <model-id>　<显示名>
+      总分 1.0000（profile=coding，id=<model-id>）
+      上下文 1048576 tokens → 1.0000 × 权重 20% = 0.2000
+      ...
+```
+
+两条使用提醒：catalog 里有 **6 条 `max_tokens=0`、1 条 `context_length=0` 的脏数据**，
+它们不代表「零能力」，score 按默认上限兜底；另外，被健康快照判死的模型分数可能仍然很高，
+但调了必失败 —— score 默认**不排除**任何模型（它读不到宿主内存里的健康态），只在结尾给出
+「五档各自前 3」；挑之前在 `magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth`
+里核实一下，或用 `--exclude` 手动剔掉（见第 9 节排错）。
+
+**contract-diff**：`node scripts/contract-diff.mjs`
 
 一条命令比对三处的 options 字段：`plugin/src/config.mjs` 的 `DEFAULTS` 键、README「插件配置」表、
 `CONTRACT.md` 反引号字段，报三类差集 —— **README 漏写**（用户看不到开关）、**代码没实现**
@@ -375,6 +505,8 @@ $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\
 | 改完代码 magpie 里没变化 | 命中宿主缓存，要 bump `plugin/package.json` 的 `version` |
 | 今日 tokens 显示「上游没返回今天的用量」 | 1.2.0 之前插件把 `/v3/stat/usage` 的查询参数写成 `from`/`to`，上游只认 `start`/`end`（400 `start parameter parse error`）—— 先确认插件版本；仍是空的再查 `tk-` 临时 Key 无权查用量、或撞了 5 req/s 限流（见 [docs/troubleshooting.md](./docs/troubleshooting.md)） |
 | 某个模型突然从列表消失 | 健康快照连续 3 次「模型级」失败判了 dead，插件把它 `status` 改成 `deprecated` 藏起来，宿主不再路由；等 30 分钟（`ttlMs`）自动重新给机会，或重启宿主进程立即清空。`magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth` 可查哪些模型被判死 |
+| 插件装了但模型不出字 | 先跑 `node tools/check.mjs`（宿主侧，秒回、不联网）：多半是 provider 被置成 `off`（`plugin off/on` 或重启 magpie 都会），check 会标 `✗` 并给出 `magpie provider on qiniu-ai`；check 全通再跑 `node tools/doctor.mjs` 查账号侧 |
+| 不知道选哪个模型 | `node tools/score.mjs --profile <用途>`（`balanced` / `coding` / `long-context` / `vision` / `cheap`），91 个模型按用途打分排序，见[诊断一节](#score挑模型) |
 
 ## 开发
 

@@ -3,6 +3,49 @@
 本插件遵循语义化版本。`plugin/package.json` 的 `version` 决定 magpie 是否重新加载插件
 （改完代码不 bump 会命中宿主缓存，GUI 里看不到变化）。
 
+## 1.3.0 — 2026-11-27
+
+### 新增
+
+- **宿主侧体检 `node tools/check.mjs`**：与 `doctor` 分工互补 —— **doctor 查账号侧**
+  （Key 有效性 / 余额 / TPD / 模型矩阵 / options 自检），**check 查宿主侧**（插件条目装没装对、
+  provider 开关、账号数量、代理设置、仓库完整性、Node 版本、magpie 可执行文件）。**一条网络请求
+  都不发**，所以秒回、零费用。输出四级符号 `✓` 通过 / `⚠` 待处理 / `✗` 阻塞 / `ℹ` 提示，
+  每条问题项下面跟一行 `  → 修复：…`；退出码 `0` 全通 / `1` 有 `⚠` 或 `✗` / `2` 用法错误。
+  参数：`--json`、`--config-dir <path>`、`--repo <path>`、`--help`。最典型的用途是
+  **「插件明明装了却不出字」**：`plugin off/on` 或重启 magpie 都会把 provider 置成 `off`，
+  之后的请求全部 404、界面上一个字都不出，check 直接把这项标成 `✗` 并给出 `magpie provider on`。
+- **模型评分与推荐 `node tools/score.mjs`**：91 个模型按用途打分排序，分数 `0..1`，由四个维度
+  加权 —— 上下文窗口、输出上限、价格（`free` / `rate`）、能力（`vision` / `reasoning` /
+  `toolCall`）。参数：`--profile balanced|coding|long-context|vision|cheap`、`--limit N`、`--all`、
+  `--exclude a,b,c`、`--json`。catalog 里的脏数据（6 条 `max_tokens=0`、1 条
+  `context_length=0`）按默认上限兜底，不会因为脏字段被判成「零能力」。
+- **`doctor --fix` / `--apply`**：`--fix` 是 **dry-run**（一个字节都不写），列出「将删掉哪些从未
+  实现的字段（`baseUrl` / `chatTimeoutMs` / `autoCreateKey` / `showAllModels` / `modelOverrides` /
+  `extraHeaders` / `dailyUsageDays`）、哪些不认识的键（多半是拼错，写了也不生效）、把哪些被夹紧的
+  值改成实际生效值」；`--apply`（隐含 `--fix`）才真正写 `plugins.json`，并且**先备份**成
+  `plugins.json.bak-doctor-<时间戳>`，只改 `spec` 含 `qiniu` 的那一个插件条目的 `options`，
+  其它插件与字段原样保留；不碰 provider 状态，不碰 `plugin-auth.json`。判定逻辑抽成纯函数
+  （`src/fix.mjs`：`planFix` / `applyPlan` / `describePlan`），CLI 只负责读写与打印。
+
+### 变更
+
+- **provider 设置面板（`plugin/panel/`）从 3 个键扩到 6 个**：`pacingMinMs`(0..60000, 800) /
+  `pacingJitterMs`(0..60000, 400) / `breakerThreshold`(0..100, 5) /
+  `breakerCooldownMs`(60000..28800000ms, 30 分钟) / `quotaFailover`(bool, true) /
+  `usageCacheMs`(10000..600000ms, 30 秒)，分组为「节奏闸 / 熔断 / 账号切换 / 缓存」。毫秒类在
+  界面上按「秒」「分钟」展示，写回仍是毫秒。只读状态区显示六个生效值 + 面板版本号，并明确写着
+  「本面板只管这六个键，其余选项直接改 `plugins.json`」。`options.set` 是**整份替换**且一秒最多
+  一次，所以只在按「保存」时写一次，不做逐键即时写入。
+- README 的「诊断与自带工具」改为不带版本号的标题，内部按 `doctor` / `check` / `score` 三个子节
+  重排（contract-diff 保留在同一节内）；「出站两道闸」补一句说明这六个键也能在面板里改；
+  排错表新增「插件装了但模型不出字」「不知道选哪个模型」两行。「插件配置」表**没有新增行** ——
+  本轮没有新 options。
+
+### 测试
+
+- 新增 check（24）/ score（16）/ fix（11）三个测试文件，面板 manifest 由 8 增到 11；全量 283 → **337** 例，Node 22 与 Node 24 双跑全绿，e2e 23/23，smoke ok（1.3.0）。
+
 ## 1.2.0 — 2026-11-27
 
 ### 修复

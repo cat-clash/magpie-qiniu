@@ -206,7 +206,106 @@
 - **现象**：明明只是模型选错了，账号却被标成需要重登 → 说明上游那条错误的措辞里混进了 token/key 字样。把原始 body 贴到 issue 里，插件的判定条件需要扩。
 - **现象**：Key 被删了账号却没被标记 → 检查是不是走到了 403 那几条（欠费/配额/模型组）；那些路径**故意**不标记账号，因为重登解决不了。
 
-## 8. 面板与显示
+## 8. 插件装了但不出字（宿主侧）
+
+**先 check，后 doctor。** 顺序不能反：check 一条网络请求都不发，秒回、零费用，先把「本机装对了没」
+这件事排除掉；doctor 每条结论都要真的打一次上游，用来查账号。
+
+```powershell
+node tools/check.mjs      # 宿主侧：插件条目 / provider 开关 / 账号 / 代理 / 仓库 / Node
+node tools/doctor.mjs     # 账号侧：Key 有效性 / 余额 / TPD / options
+```
+
+- check 里有 `✗` → 先照它给的 `→ 修复：…` 处理，多数情况到这一步就结束了；
+- check 全 `✓` 还不出字 → 问题在账号侧，转 doctor。
+
+四个高频成因：
+
+### 8.1 provider 被置成 off（最常见）
+
+- **现象**：`magpie plugin list` 里 `qiniu-ai` 在、也 signed in，但对话不出发，请求全部 404。
+- **为什么**：`magpie plugin off/on` 和「重启 magpie」都会把这个 provider 置回 `off`（宿主行为，
+  不是插件 bug）。
+- **确认**：
+  ```powershell
+  node tools/check.mjs        # 「provider 开关」一行标 ✗ 就是它
+  magpie provider ls          # 看 qiniu-ai 当前是 on 还是 off
+  ```
+- **处理**：`magpie provider on qiniu-ai`。装/换插件之后固定补这一步。
+
+### 8.2 账号为空
+
+- **现象**：check 报 `✗ 账号：plugin-auth.json 里没有 qiniu-ai 或 qiniu-ai@... 的条目`；
+  对话直接 401 `sign_in_required`。
+- **确认**：
+  ```powershell
+  magpie plugin list          # 有没有 "signed in as ..."
+  node tools/doctor.mjs       # 第 1 项「凭据」会说没有可用 Key
+  ```
+- **处理**：`magpie plugin login qiniu-ai`，填一把正式 `sk-` Key，或走 AK/SK。
+
+### 8.3 AK/SK 登录了但没签发 `sk-` Key
+
+- **现象**：能登录、用量面板也有数，对话却 401 / `auth_api_key_missing`。
+- **为什么**：AK/SK 只是签名材料，日常推理要的是插件用 `POST /v1/apikeys` 自动签发的那把 `sk-` Key
+  （option `autoCreateKey`，默认开）。签发这一步失败，账号上就只剩签名能力。
+  三个常见原因：AK/SK 填反、AK/SK 与 `sk-` 混填、本机时钟漂移超过签名有效期（上游 15 分钟）。
+- **确认**：
+  ```powershell
+  node tools/check.mjs        # 「账号」一行若写「N 个账号，但都没有 key 字段」= 没签出来
+  node tools/doctor.mjs       # 「凭据」写的是 AK/SK 而不带 sk- Key 摘要；「Key 有效性」是不是 401
+  ```
+- **处理**：到控制台确认填的是**对象存储密钥**那对 AK/SK（不是 API 密钥页），别加冒号、别带空格；
+  校准本机时钟；或者干脆直接填一把正式 `sk-` Key 登录 —— 最快也最省事。
+
+### 8.4 代理把请求绕到海外
+
+- **现象**：check 的「代理」一行 `⚠`；请求超时 / 502 / TLS 报错，而裸跑
+  `curl https://api.qnaigc.com/v1/models` 是通的（或反过来，带上代理才失败）。
+- **为什么**：`api.qnaigc.com` / `api.qiniu.com` 都是国内网关，走海外代理只会更慢、更容易被断；
+  反过来把 `proxy` 写成 `direct` 时，本机靠代理才能到的海外端点会一直超时。
+- **确认**：
+  ```powershell
+  node tools/check.mjs        # 「代理」一行回显 settings.json 里的 proxy（只到 host:port）
+  ```
+  也可以直接看 `~/.config/magpie/settings.json` 的 `proxy` 字段。
+- **处理**：国内端点不该走海外代理 → 该条链路上用 `direct` 或让代理自己分流
+  （把 `api.qnaigc.com`、`api.qiniu.com` 加进代理软件的分流规则）；改完重跑
+  `magpie provider test qiniu-ai <model>` 对照一次。本插件不读任何代理相关的 options，
+  它跟宿主 / `settings.json` 走。
+
+## 9. 不知道选哪个模型
+
+别翻 [model-catalog.md](./model-catalog.md) 逐行比价格和上下文了，跑 score：91 个模型按用途打分，
+输出 `0..1` 的总分与四维分（上下文窗口 / 输出上限 / 价格 / 能力）。
+
+```powershell
+node tools/score.mjs --profile coding             # 写代码
+node tools/score.mjs --profile cheap --limit 10   # 找免费 / 最便宜的
+node tools/score.mjs --exclude <模型id>,<模型id> --profile balanced   # 排除掉已知不可用的再排
+```
+
+五档怎么选：
+
+| 你要干的活 | profile | 该看什么 |
+|---|---|---|
+| 说不清，先找个能打的 | `balanced` | 四维均衡的前几名 |
+| 写代码、跑带工具的 agent | `coding` | 上下文、`toolCall`、输出上限 |
+| 整仓读码 / 长文档问答 | `long-context` | 上下文窗口是否够放下整包文件 |
+| 图片 / 截图 / PDF | `vision` | `vision` 是硬门槛，其他维度再高也替代不了 |
+| 批处理 / 先试试水 | `cheap` | 价格，`free` 优先 |
+
+两条硬提醒：
+
+- **健康快照判死的模型不要选**。插件进程内记「模型级」失败（未标价 503 → 404、不在订阅组 403、
+  模型不存在），同一模型连续 3 次就把 `status` 改成 `deprecated`，宿主既不显示也不路由。这类模型
+  在 score 里分数可能仍然很高，但调了必失败。挑之前先看
+  `magpie plugin diagnostics magpie-qiniu-lite` 的 `modelHealth.dead`；等 `ttlMs`（默认 30 分钟）
+  过期，或重启宿主进程立即清空。
+- **catalog 里的 `max_tokens=0` / `context_length=0` 是脏数据**（6 条 / 1 条），不是「零能力」，
+  score 已按默认上限兜底；看到这些模型没被排到最后，是故意的。
+
+## 10. 面板与显示
 
 ### 用量面板一片空白 / 只有文字没有进度条
 
@@ -218,7 +317,7 @@
 - **定位**：`/v3/stat/usage/apikey/cost*` 是**标准价格**，不含资源包抵扣与折扣；预估账单页本身延迟约 15 分钟；余额单位是**元 × 1e8**（插件已除回去）。时区默认 `Asia/Shanghai`（IANA 名，传错会报"无效的 timezone"）。
 - **处理**：以财务中心为准；对比时把资源包抵扣单独算。
 
-## 9. 还是不行
+## 11. 还是不行
 
 带上这四样开 issue（[模板](../.github/ISSUE_TEMPLATE/bug_report.yml) 会要求这五栏）：
 
